@@ -3,6 +3,7 @@ import { Bell, Clock, Globe, PauseCircle, Radar, Wifi } from 'lucide-react'
 import { api, useApi } from '../api'
 import DeviceIcon from '../components/DeviceIcon'
 import ScreenTime from '../components/ScreenTime'
+import LiveNow from '../components/LiveNow'
 import PauseButton from '../components/PauseButton'
 import { SetupCheckBanner } from '../components/SetupCheck'
 import { Button, Callout, Card, EmptyState, ErrorState, Loading, PageHeader, StatCard, StatusDot, useToast } from '../components/ui'
@@ -49,6 +50,8 @@ export default function Dashboard() {
         <StatCard label="Lookups today" value={number(queries.total)} hint={`${number(queries.blocked)} blocked`} icon={Globe} tone="violet" />
         <StatCard label="Paused devices" value={counts.paused} hint={counts.paused ? 'Internet currently blocked' : 'Everyone is online'} icon={PauseCircle} tone={counts.paused ? 'red' : 'amber'} />
       </div>
+
+      <div className="mt-6"><LiveNow /></div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2"><ScreenTime /></div>

@@ -264,6 +264,28 @@ def dashboard():
     }
 
 
+# ====================================================================== live activity
+@api.get("/live")
+def live():
+    """Right now: who is using which app, and since when. Idle and untracked devices listed separately."""
+    now = time.time()
+    cur = activity.current_activity(now)
+    in_use, idle, unknown = [], [], []
+    for d in db.q("SELECT * FROM devices WHERE is_online=1"):
+        if d["is_gateway"] or d["type"] in activity.NON_HUMAN_TYPES:
+            continue
+        s = {k: v for k, v in D.serialize(d, now).items() if k in ("id", "display_name", "owner", "type", "ip", "paused")}
+        if d["id"] in cur:
+            in_use.append({**s, **cur[d["id"]]})
+        elif _in_use(d, {}) is False:
+            idle.append(s)
+        else:
+            unknown.append(s)
+    in_use.sort(key=lambda x: x["in_use_since"])
+    return {"now": now, "in_use": in_use, "idle": idle, "untracked": unknown,
+            "enabled": bool(S.get("activity_detection") and S.get("adguard_enabled"))}
+
+
 # ====================================================================== devices
 @api.get("/devices")
 def list_devices():
@@ -310,7 +332,8 @@ def get_device(device_id: int):
     s = D.serialize(d)
     recent = db.q1("SELECT COUNT(*) AS total, IFNULL(SUM(blocked),0) AS blocked FROM dns_queries "
                    "WHERE device_id=? AND ts>?", (device_id, time.time() - 900))
-    s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"), in_use=_in_use(d, activity.in_use_now()))
+    s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"), in_use=_in_use(d, activity.in_use_now()),
+             live=activity.current_activity().get(device_id))
     s.update(paused=st.get("paused", False), block_reasons=st.get("reasons", []),
              effective_blocked_services=sorted(st.get("services", [])),
              ips=enforcer.device_ips(device_id),

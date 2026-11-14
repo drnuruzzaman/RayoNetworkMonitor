@@ -101,7 +101,17 @@ export function Badge({ color = 'gray', children, dot, className }) {
 export function StatusDot({ online, paused, inUse }) {
   if (paused) return <Badge color="red" dot>Paused</Badge>
   if (!online) return <Badge color="gray" dot>Offline</Badge>
-  if (inUse === true) return <Badge color="green" dot>In use</Badge>
+  if (inUse === true) {
+    return (
+      <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-500/40 dark:text-emerald-300">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+        </span>
+        In use
+      </span>
+    )
+  }
   if (inUse === false) {
     return <span title="Connected to Wi-Fi, but only background traffic (e.g. screen locked)"><Badge color="orange" dot>Idle</Badge></span>
   }

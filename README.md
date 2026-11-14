@@ -26,6 +26,22 @@ Everything is configured from the web UI. No config files to edit.
 | App usage & screen-time estimates, website lists | Yes |
 | Pause internet, block apps, bedtime schedules, safe search | Yes |
 
+## Launcher (everyday use)
+
+Double-click **`HomeNet.pyw`** in the project folder (after running `start.ps1` once to set things up).
+
+| Button / option | What it does |
+|---|---|
+| **Start / Stop / Restart** | Runs HomeNet in the background (no console window) |
+| **Open dashboard in browser** | Opens `http://localhost:<port>`. The port comes from Settings. |
+| **Open AdGuard Home in browser** | Opens AdGuard's admin page at the address saved in Settings → AdGuard Home |
+| **AdGuard Start / Stop / Restart** | Controls the `AdGuardHome` Windows service. Windows asks for admin permission. While stopped, devices using this PC for DNS can't reach websites. |
+| **Start HomeNet when Windows starts** | Adds/removes a shortcut in your Startup folder (no admin needed) |
+| **Desktop shortcut** | Puts a "HomeNet Monitor" launcher shortcut on your desktop |
+| **View log** | Opens `data\homenet.log` |
+
+Closing the launcher window leaves HomeNet running.
+
 ## Quick start
 
 1. **Start HomeNet** (first run installs packages and builds the UI):

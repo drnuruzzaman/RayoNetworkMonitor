@@ -9,6 +9,7 @@ import PauseButton from '../components/PauseButton'
 import BlockReasons from '../components/BlockReasons'
 import ScreenTime from '../components/ScreenTime'
 import LimitsCard from '../components/Limits'
+import { UsingNow } from '../components/LiveNow'
 import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
 import { AssignDomainModal, ServicePicker } from '../components/Pickers'
 import {
@@ -268,6 +269,7 @@ function DeviceView({ id, refresh }) {
             {device.block_reasons.map((r) => <Badge key={r} color="red">{r}</Badge>)}
             {device.is_private_mac && <Badge color="amber" title="This device uses a private/random MAC address">Private address</Badge>}
           </div>
+          {device.live && !device.paused && <UsingNow live={device.live} className="mt-2" />}
         </div>
         <div className="flex flex-wrap gap-2">
           <PauseButton device={device} onChange={reload} size="md" />

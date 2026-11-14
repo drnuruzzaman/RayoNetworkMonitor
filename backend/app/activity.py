@@ -112,6 +112,51 @@ def total(intervals: list[tuple[float, float]]) -> float:
     return sum(e - s for s, e in intervals)
 
 
+def current_activity(now: float | None = None) -> dict[int, dict]:
+    """For each device someone is using right now: which apps (most active first), since when.
+
+    "Current app" = the app with the most foreground lookups in the last activity window. "Since" = when its
+    current session started, but never earlier than when the device's current in-use period began."""
+    if not S.get("activity_detection"):
+        return {}
+    now = now or time.time()
+    bucket, min_hosts, bridge = _params()
+    gap = S.get("usage_session_gap_min") * 60
+    bg = _background_service_ids()
+    skip = non_human_device_ids()
+    per: dict[int, dict] = {}
+    for r in db.q("SELECT device_id, domain, service_id FROM dns_queries WHERE ts>=? AND ts<=? AND device_id IS NOT NULL "
+                  "AND blocked=0", (now - bucket, now)):
+        did = r["device_id"]
+        if did in skip or r["service_id"] in bg or not r["domain"] or _is_infra(r["domain"]):
+            continue
+        e = per.setdefault(did, {"hosts": set(), "apps": {}})
+        e["hosts"].add(r["domain"])
+        if r["service_id"]:
+            e["apps"][r["service_id"]] = e["apps"].get(r["service_id"], 0) + 1
+    if not per:
+        return {}
+    ivs_all = active_intervals(now - 12 * 3600, now)
+    names = {s["id"]: s for s in db.q("SELECT id, name, category FROM services")}
+    result: dict[int, dict] = {}
+    for did, e in per.items():
+        if len(e["hosts"]) < min_hosts:
+            continue
+        ivs = ivs_all.get(did, [])
+        in_use_since = ivs[-1][0] if ivs and ivs[-1][1] >= now - bucket - bridge else now - bucket
+        apps = []
+        for sid, n in sorted(e["apps"].items(), key=lambda x: -x[1])[:4]:
+            svc = names.get(sid)
+            if not svc:
+                continue
+            sess = db.q1("SELECT start FROM usage_sessions WHERE device_id=? AND service_id=? AND end>=? AND start<=? "
+                         "ORDER BY end DESC LIMIT 1", (did, sid, now - gap, now))
+            since = max(sess["start"] if sess else now - bucket, in_use_since)
+            apps.append({"service_id": sid, "service": svc["name"], "category": svc["category"], "since": since, "lookups": n})
+        result[did] = {"in_use_since": in_use_since, "apps": apps, "now": now}
+    return result
+
+
 def in_use_now(now: float | None = None) -> dict[int, bool]:
     """device_id → True if it reached enough foreground hosts in the last window."""
     if not S.get("activity_detection"):
