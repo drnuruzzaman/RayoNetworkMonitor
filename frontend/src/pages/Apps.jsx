@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AppWindow, Check, CheckCheck, EyeOff, GitMerge, Pencil, Plus, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import { api, useApi } from '../api'
@@ -20,17 +20,35 @@ function ServiceModal({ service, categories, onClose, onSaved }) {
   const toast = useToast()
   const [form, setForm] = useState({ name: service.name || '', category: service.category || '', domains: (service.domains || []).join('\n'), track_time: service.track_time ?? true })
   const [busy, setBusy] = useState(false)
+  const [conflicts, setConflicts] = useState([])
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v?.target ? v.target.value : v }))
+  const domainList = (text) => text.split(/[\s,]+/).filter(Boolean)
+
+  // Warn (as you type) about addresses another app already lists, and which app gets them.
+  useEffect(() => {
+    const domains = domainList(form.domains)
+    if (!domains.length) { setConflicts([]); return undefined }
+    let live = true
+    const t = setTimeout(() => {
+      api('/services/check-domains', { method: 'POST', body: { domains, id: service.id ?? null } })
+        .then((r) => live && setConflicts(r.conflicts || [])).catch(() => live && setConflicts([]))
+    }, 400)
+    return () => { live = false; clearTimeout(t) }
+  }, [form.domains, service.id])
+
   const save = async () => {
     setBusy(true)
     try {
-      const body = { ...form, domains: form.domains.split(/[\s,]+/).filter(Boolean) }
-      await api(service.id ? `/services/${service.id}` : '/services', { method: service.id ? 'PUT' : 'POST', body })
-      toast('App saved')
+      const body = { ...form, domains: domainList(form.domains) }
+      const r = await api(service.id ? `/services/${service.id}` : '/services', { method: service.id ? 'PUT' : 'POST', body })
+      const lost = (r?.conflicts || []).filter((c) => c.wins === 'other')
+      if (lost.length) toast(`App saved, but ${lost.map((c) => `${c.domain} still goes to ${c.app}`).join('; ')}.`, 'warning')
+      else toast('App saved')
       onSaved()
       onClose()
     } catch (e) { toast(e.message, 'error') } finally { setBusy(false) }
   }
+  const me = form.name || 'this app'
   return (
     <Modal open onClose={onClose} title={service.id ? `Edit ${service.name}` : 'Add an app'}
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button><Button loading={busy} onClick={save} disabled={!form.name || !form.category}>Save</Button></>}>
@@ -42,9 +60,23 @@ function ServiceModal({ service, categories, onClose, onSaved }) {
             <datalist id="cats">{[...new Set([...categories, ...SUGGESTED_CATEGORIES])].map((c) => <option key={c} value={c} />)}</datalist>
           </Field>
         </div>
-        <Field label="Web addresses" help="One per line. Each also covers its sub-addresses (youtube.com covers m.youtube.com).">
+        <Field label="Web addresses" help="One per line. Each also covers its sub-addresses (youtube.com covers m.youtube.com). Use * for any part in the middle: instagram.*.fbcdn.net covers instagram.fsyd3-2.fna.fbcdn.net.">
           <textarea className="input font-mono text-xs" rows={7} value={form.domains} onChange={set('domains')} placeholder={'example.com\ncdn.example.net'} />
         </Field>
+        {conflicts.length > 0 && (
+          <Callout tone="warning" title={`${conflicts.length === 1 ? 'An address is' : `${conflicts.length} addresses are`} also in another app`}>
+            <ul className="mt-1 space-y-1">
+              {conflicts.map((c) => (
+                <li key={`${c.domain}-${c.app_id}`}>
+                  <span className="font-mono text-xs">{c.domain}</span> is also in <b>{c.app}</b>.{' '}
+                  {c.wins === 'this'
+                    ? <>Lookups will go to <b>{me}</b>.</>
+                    : <>Lookups keep going to <b>{c.app}</b> (it takes priority). Remove it from {c.app} to move it here.</>}
+                </li>
+              ))}
+            </ul>
+          </Callout>
+        )}
         <Toggle checked={form.track_time} onChange={set('track_time')} label="Count as screen time" description="Turn off for background services like system updates." />
       </div>
     </Modal>
@@ -86,6 +118,41 @@ function ReviewRow({ s, categories, targets, onDone }) {
   )
 }
 
+/** Background filter: addresses each device contacts all day, learned automatically and ignored for that device. */
+function LearnedBackground({ q }) {
+  const { data } = useApi('/services/learned-background')
+  if (!data?.enabled) return null
+  const needle = q.toLowerCase()
+  const devices = data.devices
+    .map((d) => ({ ...d, hosts: d.hosts.filter((h) => !needle || `${d.name} ${h.domain}`.toLowerCase().includes(needle)) }))
+    .filter((d) => d.hosts.length)
+  return (
+    <Card bodyClass="" title={<span className="flex items-center gap-2"><EyeOff className="h-4 w-4 text-slate-400" />Learned per device</span>}
+      subtitle={`Addresses a device contacts all day whether or not anyone is using it. Ignored for that device only. Re-learned hourly from the last 7 days${data.learned ? `, last ${timeAgo(data.learned)}` : ''}.`}>
+      {devices.length === 0 ? (
+        <EmptyState icon={EyeOff} title={needle ? 'No matches' : 'Nothing learned yet'}
+          description={needle ? undefined : 'Each device needs about 6 hours of activity before its background pattern is learned.'} />
+      ) : (
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {devices.map((d) => (
+            <li key={d.id} className="flex flex-col gap-2 px-5 py-3 sm:flex-row sm:items-start sm:gap-4">
+              <Link to={`/devices/${d.id}`} className="w-48 shrink-0 truncate text-sm font-medium hover:underline">{d.name}</Link>
+              <ul className="min-w-0 flex-1 space-y-1">
+                {d.hosts.map((h) => (
+                  <li key={h.domain} className="flex justify-between gap-3 text-xs">
+                    <span className="truncate font-mono text-slate-600 dark:text-slate-300">{h.domain}</span>
+                    <span className="shrink-0 tabular-nums text-slate-500">{Math.round(h.share * 100)}% of the time</span>
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
 export default function Apps() {
   const toast = useToast()
   const { data, error, loading, reload } = useApi('/services')
@@ -103,8 +170,10 @@ export default function Apps() {
 
   const groups = useMemo(() => {
     const g = {}
+    // Same rule the backend uses to ignore traffic: hidden, not screen time, or System category.
+    const isBackground = (s) => s.hidden || !s.track_time || s.category === 'System'
     for (const s of services) {
-      if (source === 'background' ? !s.hidden : source !== 'all' && s.source !== source) continue
+      if (source === 'background' ? !isBackground(s) : source !== 'all' && s.source !== source) continue
       if (q && !`${s.name} ${s.category} ${s.domains.join(' ')}`.toLowerCase().includes(q.toLowerCase())) continue
       ;(g[s.hidden ? 'Background' : s.category] ||= []).push(s)
     }
@@ -171,6 +240,7 @@ export default function Apps() {
               { value: 'auto', label: 'Auto' }, { value: 'user', label: 'Yours' }, { value: 'background', label: 'Background' },
             ]} />
           </div>
+          {source === 'background' && <div className="mb-6"><LearnedBackground q={q} /></div>}
           {groups.length === 0 ? <Card><EmptyState icon={AppWindow} title="No apps found" /></Card> : (
             <div className="space-y-6">
               {groups.map(([cat, items]) => (

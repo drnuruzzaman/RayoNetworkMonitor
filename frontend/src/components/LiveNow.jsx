@@ -34,10 +34,14 @@ export function UsingNow({ live, className }) {
   return (
     <p className={cx('flex flex-wrap items-center gap-x-1.5 text-sm', className)}>
       <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
-      {app ? <>Using <b style={{ color: categoryColor(app.category) }}>{app.service}</b> since {clock(app.since)}
+      {app ? <>Using <b style={{ color: categoryColor(app.category) }}>{app.service === 'Website' && app.domain ? app.domain : app.service}</b> since {clock(app.since)}
         <span className="tabular-nums text-slate-500">· {running(now - app.since)}</span></>
         : <>In use since {clock(live.in_use_since)} <span className="tabular-nums text-slate-500">· {running(now - live.in_use_since)}</span></>}
-      {live.apps?.length > 1 && <span className="text-slate-500">· also {live.apps.slice(1).map((a) => a.service).join(', ')}</span>}
+      {live.apps?.length > 1 && (
+        <span className="text-slate-500">· also {live.apps.slice(1).map((a, i) => (
+          <span key={a.service_id}>{i > 0 && ', '}<b style={{ color: categoryColor(a.category) }}>{a.service === 'Website' && a.domain ? a.domain : a.service}</b></span>
+        ))}</span>
+      )}
     </p>
   )
 }

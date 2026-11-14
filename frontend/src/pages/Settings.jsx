@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Bell, BookOpen, Database, Factory, KeyRound, Network, PlugZap, RotateCw, Save, ShieldCheck, SlidersHorizontal, Sparkles } from 'lucide-react'
+import { Bell, BookOpen, Database, Download, Factory, KeyRound, Network, PlugZap, RotateCcw, RotateCw, Save, ShieldCheck, SlidersHorizontal, Sparkles, Upload } from 'lucide-react'
 import { api, useApi } from '../api'
 import { AdGuardInstallGuide, DnsGuide } from '../components/Guides'
-import { Button, Callout, Card, ErrorState, Field, Loading, PageHeader, Select, Tabs, Toggle, useToast } from '../components/ui'
+import { Button, Callout, Card, ConfirmModal, ErrorState, Field, Loading, PageHeader, Select, Tabs, Toggle, useToast } from '../components/ui'
 import { dateTime, number } from '../lib/format'
 
 const GROUPS = [
@@ -69,6 +69,147 @@ function PasswordCard() {
         <Field label="Confirm new password"><input className="input" type="password" value={f.confirm} onChange={(e) => setF({ ...f, confirm: e.target.value })} autoComplete="new-password" /></Field>
         <Button type="submit" loading={busy}>Change password</Button>
       </form>
+    </Card>
+  )
+}
+
+/** AdGuard tab: HomeNet's VPN list under AdGuard's Filters → DNS blocklists (AdGuard's Blocked services can't be extended). */
+function VpnBlocklistCard() {
+  const toast = useToast()
+  const nav = useNavigate()
+  const { data, reload, setData } = useApi('/adguard/vpn-blocklist')
+  const [busy, setBusy] = useState('')
+  const run = async (key, fn, msg) => {
+    setBusy(key)
+    try { setData(await fn()); if (msg) toast(msg) } catch (e) { toast(e.message, 'error') } finally { setBusy('') }
+  }
+  if (!data) return null
+  const toggle = (on) => run('toggle', () => api('/adguard/vpn-blocklist', { method: 'PUT', body: { enabled: on } }),
+    on ? 'VPN blocklist is on in AdGuard Home for every device' : 'VPN blocklist switched off in AdGuard Home')
+  return (
+    <Card className="mt-6" title="Block VPN services (whole network)"
+      subtitle={`Appears in AdGuard Home under Filters → DNS blocklists as "${data.name}".`}>
+      <div className="max-w-2xl space-y-4">
+        {data.error && <Callout tone="warning">{data.error}</Callout>}
+        <Toggle checked={data.enabled} onChange={toggle} disabled={!!data.error || busy === 'toggle'}
+          label="Block VPN and proxy apps for every device"
+          description={`Blocks the ${data.entries} addresses of the apps in the "${data.category}" category of Apps & categories. Add or edit VPN apps there; AdGuard picks up changes within the hour.`} />
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          {data.installed
+            ? <>In AdGuard: {data.enabled ? 'on' : 'off'}{data.rules_count != null ? `, ${number(data.rules_count)} rules` : ''}{data.last_updated ? `, updated ${dateTime(data.last_updated)}` : ''}.</>
+            : 'Not added to AdGuard yet. Switching it on adds it.'}
+        </p>
+        <Callout tone="info">
+          AdGuard's own Filters → Blocked services list is built into AdGuard and can't be extended, so this uses a DNS blocklist instead.
+          To block VPNs on one device only, pick them under that device's Controls → Always block these apps.
+          Blocking by address stops most VPN apps signing in and finding servers; one that's already connected, or connects straight to an IP address, can get round it.
+        </Callout>
+        <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-5 dark:border-slate-800">
+          <Button variant="secondary" icon={RotateCw} disabled={!data.enabled} loading={busy === 'refresh'}
+            onClick={() => run('refresh', () => api('/adguard/vpn-blocklist/refresh', { method: 'POST' }), 'AdGuard re-downloaded the VPN list')}>Update now</Button>
+          <Button variant="secondary" onClick={() => nav('/apps')}>Edit VPN apps</Button>
+          {data.installed && <Button variant="ghost" className="text-red-600" loading={busy === 'remove'}
+            onClick={() => run('remove', () => api('/adguard/vpn-blocklist', { method: 'DELETE' }), 'Removed from AdGuard Home')}>Remove from AdGuard</Button>}
+          <Button variant="ghost" onClick={reload}>Recheck</Button>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+const fmt = (v) => (typeof v === 'boolean' ? (v ? 'On' : 'Off') : v === '' || v == null ? '(empty)' : String(v))
+
+/** General tab: save the current settings as your own defaults, reset to them, or move them via a file. */
+function DefaultsCard({ onApplied }) {
+  const toast = useToast()
+  const { data, reload, setData } = useApi('/settings/defaults')
+  const [busy, setBusy] = useState('')
+  const [confirm, setConfirm] = useState(null) // 'apply' | 'clear'
+  const fileRef = useRef(null)
+  if (!data) return null
+  const run = async (key, fn) => { setBusy(key); try { await fn() } catch (e) { toast(e.message, 'error') } finally { setBusy('') } }
+
+  const save = () => run('save', async () => { setData(await api('/settings/defaults/save', { method: 'POST' })); toast('Current settings saved as your defaults') })
+  const exportFile = () => run('export', async () => {
+    const doc = await api('/settings/defaults/export')
+    const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }))
+    const a = Object.assign(document.createElement('a'), { href: url, download: `homenet-settings-${new Date().toISOString().slice(0, 10)}.json` })
+    a.click(); URL.revokeObjectURL(url)
+  })
+  const importFile = (e) => {
+    const f = e.target.files?.[0]; e.target.value = ''
+    if (!f) return
+    run('import', async () => {
+      let doc
+      try { doc = JSON.parse(await f.text()) } catch { throw new Error("That file isn't valid JSON.") }
+      const r = await api('/settings/defaults/import', { method: 'POST', body: doc })
+      setData(r)
+      toast(`Imported ${r.imported} settings${r.imported_apps ? ` and ${r.imported_apps} apps` : ''} as your defaults${r.skipped.length ? ` (${r.skipped.length} skipped)` : ''}. Use "Reset to defaults" to apply them.`)
+    })
+  }
+  const apply = async () => {
+    const r = await api('/settings/defaults/apply', { method: 'POST' })
+    setData(r); setConfirm(null); onApplied(r)
+    const a = r.apps_changed
+    const nApps = a ? a.add.length + a.update.length + a.remove.length : 0
+    const parts = [r.changed.length && `${r.changed.length} setting${r.changed.length === 1 ? '' : 's'}`, nApps && `${nApps} app${nApps === 1 ? '' : 's'}`].filter(Boolean)
+    toast(parts.length ? `Reset ${parts.join(' and ')}` : 'Already at defaults')
+  }
+  const clear = async () => { setData(await api('/settings/defaults', { method: 'DELETE' })); setConfirm(null); toast('Your saved defaults were removed. Built-in defaults apply again.') }
+
+  const own = !!data.saved
+  const ad = data.apps?.diff
+  const appChanges = ad ? ad.add.length + ad.update.length + ad.remove.length : 0
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`
+  return (
+    <Card className="mt-6" title="Default settings"
+      subtitle={own ? `Your own defaults: ${data.count} settings${data.apps ? ` and ${data.apps.count} apps` : ''}, saved ${dateTime(data.saved)}.` : 'Using HomeNet\'s built-in defaults.'}>
+      <div className="max-w-2xl space-y-4">
+        <p className="text-sm text-slate-600 dark:text-slate-300">
+          Save how HomeNet is set up now, including every app in Apps &amp; categories, as the defaults. "Reset to defaults" then brings
+          everything back to this, and a new setup that has the saved file in its data folder starts from it. Export downloads settings and
+          apps as a file you can import on another PC. The AdGuard password is never included.
+        </p>
+        <ul className="space-y-1 text-sm">
+          <li>{data.differs.length === 0 ? 'All settings match the defaults.' : `${plural(data.differs.length, 'setting')} differ from the ${own ? 'saved' : 'built-in'} defaults.`}</li>
+          <li className="text-slate-600 dark:text-slate-300">
+            {!data.apps ? 'Apps & categories: not part of the defaults yet (save or import to include them).'
+              : appChanges === 0 ? 'Apps & categories match the defaults.'
+              : `Apps & categories: ${[ad.add.length && `${ad.add.length} to add back`, ad.update.length && `${ad.update.length} changed`, ad.remove.length && `${ad.remove.length} new since saved`].filter(Boolean).join(', ')}.`}
+          </li>
+        </ul>
+        <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-5 dark:border-slate-800">
+          <Button icon={Save} loading={busy === 'save'} onClick={save}>Save current as defaults</Button>
+          <Button variant="secondary" icon={RotateCcw} disabled={!data.differs.length && !appChanges} onClick={() => setConfirm('apply')}>Reset to defaults</Button>
+          <Button variant="secondary" icon={Download} loading={busy === 'export'} onClick={exportFile}>Export</Button>
+          <Button variant="secondary" icon={Upload} loading={busy === 'import'} onClick={() => fileRef.current?.click()}>Import</Button>
+          {own && <Button variant="ghost" className="text-red-600" onClick={() => setConfirm('clear')}>Use built-in defaults</Button>}
+          <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" onChange={importFile} />
+        </div>
+      </div>
+      <ConfirmModal open={confirm === 'apply'} onClose={() => setConfirm(null)} title="Reset to defaults?" confirmLabel="Reset" danger
+        message={<span className="block max-h-80 space-y-3 overflow-y-auto">
+          {data.differs.length > 0 && <>
+            <span className="block">These settings change to the {own ? 'saved' : 'built-in'} defaults:</span>
+            <span className="block space-y-1">
+              {data.differs.map((d) => (
+                <span key={d.key} className="block text-xs">
+                  <b>{d.label}</b>: {fmt(d.current)} → {fmt(d.default)}{d.restart && ' (after restart)'}
+                </span>
+              ))}
+            </span>
+          </>}
+          {appChanges > 0 && <>
+            <span className="block">Apps &amp; categories go back to the saved list:</span>
+            {[['Added back', ad.add], ['Restored to saved version', ad.update], ['Removed (with their history)', ad.remove]].map(([label, names]) => names.length > 0 && (
+              <span key={label} className="block text-xs"><b>{label} ({names.length}):</b> {names.join(', ')}</span>
+            ))}
+          </>}
+        </span>}
+        onConfirm={apply} />
+      <ConfirmModal open={confirm === 'clear'} onClose={() => setConfirm(null)} title="Use built-in defaults?" confirmLabel="Remove saved defaults" danger
+        message="Your saved defaults are removed and HomeNet's built-in ones are used for future resets. Your current settings don't change."
+        onConfirm={clear} />
     </Card>
   )
 }
@@ -162,6 +303,10 @@ export default function Settings() {
             </div>
           </div>
         </Card>
+      )}
+      {tab === 'adguard' && <VpnBlocklistCard />}
+      {tab === 'general' && (
+        <DefaultsCard onApplied={(r) => { setData({ settings: r.settings }); setDraft({}); if (r.restart_required) setRestart(true) }} />
       )}
     </>
   )

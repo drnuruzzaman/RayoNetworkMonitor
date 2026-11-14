@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import activity, adguard, alerts, db, detect, dhcp, diagnostics, enforcer, netinfo, oui, psl, scanner, tasks, usage
+from . import activity, adguard, alerts, db, detect, dhcp, diagnostics, enforcer, netinfo, oui, psl, scanner, tasks, usage, vpnlist
 from . import devices as D
 from . import settings_store as S
 from .auth import clear_cookies, is_local, issue, record_failure, require_auth, throttle
@@ -129,6 +129,12 @@ def put_settings(body: dict):
             S.set(key, v)
             changed.append(key)
             restart = restart or bool(spec.get("restart"))
+    _settings_changed(changed)
+    return {"settings": S.public_view(), "changed": changed, "restart_required": restart}
+
+
+def _settings_changed(changed: list[str]) -> None:
+    """Wake the loops that depend on the settings that just changed."""
     if any(k.startswith("dhcp_") for k in changed):
         tasks.kick("dhcp")
     if any(k.startswith("adguard") for k in changed):
@@ -137,7 +143,72 @@ def put_settings(body: dict):
         tasks.kick("enforce")
     if any(k.startswith("scan") or k in ("probe_wait_sec", "max_scan_hosts") for k in changed):
         tasks.kick("scan")
-    return {"settings": S.public_view(), "changed": changed, "restart_required": restart}
+
+
+def _defaults_view() -> dict:
+    """Your saved defaults (if any) and which current settings differ from the defaults."""
+    sd = S.saved_defaults()
+    specs = {s["key"]: s for s in S.SCHEMA}
+    apps = sd.get("apps")
+    return {
+        "saved": sd.get("saved"), "count": len(sd.get("settings") or {}), "file": S.DEFAULTS_FILE.name,
+        "differs": [{"key": k, "label": specs[k]["label"], "group": specs[k]["group"], "current": S.get(k),
+                     "default": S._default(k), "restart": bool(specs[k].get("restart"))} for k in S.differing_keys()],
+        # Apps are only reset when your defaults include them (there is no "built-in" version of your app list).
+        "apps": {"count": len(apps), "diff": usage.catalog_diff(apps)} if apps else None,
+    }
+
+
+@api.get("/settings/defaults")
+def get_settings_defaults():
+    return _defaults_view()
+
+
+@api.post("/settings/defaults/save")
+def save_settings_defaults():
+    """Save the current settings and 'Apps & categories' list as your defaults."""
+    S.save_defaults(apps=usage.catalog_snapshot())
+    return _defaults_view()
+
+
+@api.post("/settings/defaults/apply")
+def apply_settings_defaults():
+    """Set every setting back to the defaults (yours if saved, else built-in), and the app list to yours if saved."""
+    specs = {s["key"]: s for s in S.SCHEMA}
+    changed = S.reset_to_defaults()
+    _settings_changed(changed)
+    apps = S.saved_defaults().get("apps")
+    app_diff = usage.apply_catalog(apps) if apps else None
+    if app_diff and any(app_diff.values()):
+        tasks.kick("enforce")  # app addresses feed blocking and time limits
+    return {**_defaults_view(), "settings": S.public_view(), "changed": changed, "apps_changed": app_diff,
+            "restart_required": any(specs[k].get("restart") for k in changed)}
+
+
+@api.delete("/settings/defaults")
+def clear_settings_defaults():
+    """Forget your saved defaults; the built-in ones apply again (current settings are kept)."""
+    S.clear_defaults()
+    return _defaults_view()
+
+
+@api.get("/settings/defaults/export")
+def export_settings():
+    """All current settings (passwords excluded) and the 'Apps & categories' list as a JSON document, for download."""
+    return S.export_document(S.snapshot(), usage.catalog_snapshot())
+
+
+@api.post("/settings/defaults/import")
+def import_settings_defaults(body: dict):
+    """Use an exported file as your defaults. Doesn't change current settings or apps until applied."""
+    if body.get("app") != "HomeNet" or not isinstance(body.get("settings"), dict):
+        raise HTTPException(400, "That isn't a HomeNet settings file.")
+    values, skipped = S.validate_values(body["settings"])
+    apps = S.validate_apps(body.get("apps"))
+    if not values and not apps:
+        raise HTTPException(400, "The file has no settings HomeNet can use.")
+    S.save_defaults(values, apps)
+    return {**_defaults_view(), "imported": len(values), "imported_apps": len(apps or []), "skipped": skipped}
 
 
 class AdGuardTest(BaseModel):
@@ -333,7 +404,9 @@ def get_device(device_id: int):
     recent = db.q1("SELECT COUNT(*) AS total, IFNULL(SUM(blocked),0) AS blocked FROM dns_queries "
                    "WHERE device_id=? AND ts>?", (device_id, time.time() - 900))
     s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"), in_use=_in_use(d, activity.in_use_now()),
-             live=activity.current_activity().get(device_id))
+             live=activity.current_activity().get(device_id),
+             background_hosts=db.q("SELECT domain, share FROM device_background WHERE device_id=? ORDER BY share DESC",
+                                   (device_id,)) if S.get("activity_learn_background") else [])
     s.update(paused=st.get("paused", False), block_reasons=st.get("reasons", []),
              effective_blocked_services=sorted(st.get("services", [])),
              ips=enforcer.device_ips(device_id),
@@ -411,7 +484,13 @@ def put_controls(device_id: int, body: dict):
     c = dict(D.DEFAULT_CONTROLS)
     for k in c:
         if k in body:
-            c[k] = [str(x) for x in body[k]] if k == "blocked_services" else bool(body[k])
+            if k == "blocked_services":
+                c[k] = [str(x) for x in body[k]]
+            elif k == "blocked_apps":
+                known = {r["id"] for r in db.q("SELECT id FROM services")}
+                c[k] = sorted({int(x) for x in body[k] if str(x).isdigit() and int(x) in known})
+            else:
+                c[k] = bool(body[k])
     D.save_controls(device_id, c)
     tasks.kick("enforce")
     return get_device(device_id)
@@ -477,6 +556,20 @@ def _services_changed(sid: int | None = None):
     usage.rematch_recent()
     if sid:
         usage.rebuild_sessions(sid)  # so the change also applies to earlier activity, not just new lookups
+
+
+@api.get("/services/learned-background")
+def learned_background():
+    """Per-device background chatter learned from the last 7 days (see activity.learn_background)."""
+    if not S.get("activity_learn_background"):
+        return {"enabled": False, "devices": [], "learned": None}
+    rows = db.q("SELECT b.device_id, b.domain, b.share, b.learned, COALESCE(d.name, d.hostname, d.mac) AS device "
+                "FROM device_background b JOIN devices d ON d.id=b.device_id ORDER BY device, b.share DESC")
+    devices: dict[int, dict] = {}
+    for r in rows:
+        devices.setdefault(r["device_id"], {"id": r["device_id"], "name": r["device"], "hosts": []})["hosts"].append(
+            {"domain": r["domain"], "share": r["share"]})
+    return {"enabled": True, "devices": list(devices.values()), "learned": max((r["learned"] for r in rows), default=None)}
 
 
 @api.get("/services")
@@ -562,6 +655,35 @@ def _after_sync(ids):
         usage.rebuild_sessions(sid)
 
 
+_SOURCE_RANK = {"auto": 0, "adguard": 1}  # matcher priority: higher rank wins, then the newer app (higher id)
+
+
+def _domain_conflicts(domains: list[str], sid: int | None) -> list[dict]:
+    """Addresses in `domains` that another app also lists exactly, and which app ends up getting them.
+    sid=None means a new app (it will be 'yours', the newest)."""
+    me = db.q1("SELECT id, name, source FROM services WHERE id=?", (sid,)) if sid else None
+    my_key = (_SOURCE_RANK.get(me["source"], 2), me["id"]) if me else (2, float("inf"))
+    wanted = set(_clean_domains(domains))
+    out = []
+    for s in db.q("SELECT id, name, source, domains FROM services" + (" WHERE id!=?" if sid else ""), (sid,) if sid else ()):
+        for d in db.jload(s["domains"], []):
+            if d in wanted:
+                theirs = (_SOURCE_RANK.get(s["source"], 2), s["id"])
+                out.append({"domain": d, "app": s["name"], "app_id": s["id"], "wins": "other" if theirs > my_key else "this"})
+    return sorted(out, key=lambda c: (c["domain"], c["app"]))
+
+
+class DomainCheckBody(BaseModel):
+    domains: list[str]
+    id: int | None = None
+
+
+@api.post("/services/check-domains")
+def check_domains(body: DomainCheckBody):
+    """Live warning for the app editor: addresses another app already lists."""
+    return {"conflicts": _domain_conflicts(body.domains, body.id)}
+
+
 @api.post("/services")
 def add_service(body: ServiceBody):
     if db.q1("SELECT id FROM services WHERE name=?", (body.name.strip(),)):
@@ -569,7 +691,7 @@ def add_service(body: ServiceBody):
     cur = db.ex("INSERT INTO services(name, category, domains, track_time, source, reviewed, created) VALUES(?,?,?,?,'user',1,?)",
                 (body.name.strip(), body.category.strip(), json.dumps(_clean_domains(body.domains)), int(body.track_time), time.time()))
     _services_changed(cur.lastrowid)
-    return list_services()
+    return {**list_services(), "conflicts": _domain_conflicts(body.domains, cur.lastrowid)}
 
 
 @api.put("/services/{sid}")
@@ -582,7 +704,7 @@ def update_service(sid: int, body: ServiceBody):
           (body.name.strip(), body.category.strip(), json.dumps(_clean_domains(body.domains)), int(body.track_time),
            int(body.track_time), sid))
     _services_changed(sid)
-    return list_services()
+    return {**list_services(), "conflicts": _domain_conflicts(body.domains, sid)}
 
 
 @api.delete("/services/{sid}")
@@ -609,6 +731,47 @@ def add_domain(sid: int, body: DomainBody):
 
 # ====================================================================== AdGuard passthrough
 _svc_cache: dict = {"ts": 0, "data": []}
+
+
+@public.get("/blocklists/vpn.txt")
+def vpn_blocklist_file():
+    """The VPN blocklist AdGuard Home downloads (no login: AdGuard fetches it). Only VPN app addresses, nothing private."""
+    return Response(vpnlist.render(), media_type="text/plain; charset=utf-8")
+
+
+class VpnListBody(BaseModel):
+    enabled: bool
+
+
+@api.get("/adguard/vpn-blocklist")
+async def get_vpn_blocklist():
+    return await vpnlist.status()
+
+
+@api.put("/adguard/vpn-blocklist")
+async def put_vpn_blocklist(body: VpnListBody):
+    """Add HomeNet's VPN list to AdGuard's Filters → DNS blocklists and switch it on/off (whole network)."""
+    try:
+        return await vpnlist.set_enabled(body.enabled)
+    except adguard.AdGuardError as e:
+        raise HTTPException(502, str(e))
+
+
+@api.post("/adguard/vpn-blocklist/refresh")
+async def refresh_vpn_blocklist():
+    try:
+        await vpnlist.refresh()
+        return await vpnlist.status()
+    except adguard.AdGuardError as e:
+        raise HTTPException(502, str(e))
+
+
+@api.delete("/adguard/vpn-blocklist")
+async def delete_vpn_blocklist():
+    try:
+        return await vpnlist.remove()
+    except adguard.AdGuardError as e:
+        raise HTTPException(502, str(e))
 
 
 @api.get("/adguard/services")

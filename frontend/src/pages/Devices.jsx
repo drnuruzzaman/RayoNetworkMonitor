@@ -1,13 +1,49 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { MoreHorizontal, Pencil, Radar, Search, ShieldQuestion, Wifi } from 'lucide-react'
+import { ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, Pencil, Radar, Search, ShieldQuestion, Wifi } from 'lucide-react'
 import { api, useApi } from '../api'
 import DeviceIcon, { TYPE_LABELS } from '../components/DeviceIcon'
 import EditDeviceModal from '../components/EditDeviceModal'
 import PauseButton from '../components/PauseButton'
 import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
-import { Badge, Button, Card, EmptyState, ErrorState, Loading, Menu, PageHeader, Segmented, Select, StatusDot, useToast } from '../components/ui'
+import { Badge, Button, Card, CopyButton, EmptyState, ErrorState, Loading, Menu, PageHeader, Segmented, Select, StatusDot, cx, useToast } from '../components/ui'
 import { duration, timeAgo } from '../lib/format'
+
+// Sort keys for the table headers. Each returns a value where "bigger" sorts later in ascending order.
+const ipNum = (ip) => (ip && /^\d+\.\d+\.\d+\.\d+$/.test(ip) ? ip.split('.').reduce((n, o) => n * 256 + Number(o), 0) : null)
+// Mirrors the status badge: Offline < Paused < Idle < Online (not tracked) < In use.
+const statusRank = (d) => (d.paused ? 1 : !d.is_online ? 0 : d.in_use === true ? 4 : d.in_use === false ? 2 : 3)
+const SORTS = {
+  device: (d) => (d.display_name || '').toLowerCase(),
+  status: statusRank,
+  address: (d) => ipNum(d.ip),
+  today: (d) => d.today_seconds || 0,
+}
+// First click on a column: names and addresses A→Z, status and time "most first".
+const FIRST_DIR = { device: 'asc', status: 'desc', address: 'asc', today: 'desc' }
+const SORT_STORE = 'homenet.devices.sort'
+
+function loadSort() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SORT_STORE))
+    if (s && SORTS[s.key] && (s.dir === 'asc' || s.dir === 'desc')) return s
+  } catch { /* storage unavailable */ }
+  return null
+}
+
+function SortTh({ col, sort, onSort, className, children }) {
+  const active = sort?.key === col
+  const Icon = !active ? ChevronsUpDown : sort.dir === 'asc' ? ChevronUp : ChevronDown
+  return (
+    <th className={cx('th', className)} aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button type="button" onClick={() => onSort(col)}
+        className={cx('-mx-1 inline-flex items-center gap-1 rounded px-1 uppercase tracking-wide hover:text-slate-900 dark:hover:text-white',
+          active && 'text-slate-900 dark:text-white')}>
+        {children}<Icon className={cx('h-3.5 w-3.5', !active && 'opacity-40')} />
+      </button>
+    </th>
+  )
+}
 
 export default function Devices() {
   const refresh = useAutoRefresh('devices', 60000)
@@ -23,6 +59,14 @@ function DevicesView({ refresh }) {
   const [type, setType] = useState('all')
   const [editing, setEditing] = useState(null)
   const [scanning, setScanning] = useState(false)
+  const [sort, setSort] = useState(loadSort) // null = the server's order
+
+  // Click: sort by that column; click again: reverse; third click: back to the default order.
+  const onSort = (key) => setSort((s) => {
+    const next = s?.key !== key ? { key, dir: FIRST_DIR[key] } : s.dir === FIRST_DIR[key] ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' } : null
+    try { next ? localStorage.setItem(SORT_STORE, JSON.stringify(next)) : localStorage.removeItem(SORT_STORE) } catch { /* ignore */ }
+    return next
+  })
 
   const devices = data?.devices || []
   const filtered = useMemo(() => devices.filter((d) => {
@@ -37,6 +81,18 @@ function DevicesView({ refresh }) {
     }
     return true
   }), [devices, q, status, type])
+
+  const rows = useMemo(() => {
+    if (!sort) return filtered
+    const key = SORTS[sort.key]
+    const sign = sort.dir === 'asc' ? 1 : -1
+    return [...filtered].sort((a, b) => {
+      const x = key(a), y = key(b)
+      if (x == null || y == null) return x == null && y == null ? 0 : x == null ? 1 : -1 // blanks always last
+      const c = typeof x === 'string' ? x.localeCompare(y, undefined, { numeric: true }) : x - y
+      return c * sign || (a.display_name || '').localeCompare(b.display_name || '', undefined, { numeric: true })
+    })
+  }, [filtered, sort])
 
   const scan = async () => {
     setScanning(true)
@@ -78,15 +134,15 @@ function DevicesView({ refresh }) {
             <table className="min-w-full divide-y divide-slate-100 dark:divide-slate-800">
               <thead className="bg-slate-50/70 dark:bg-slate-800/30">
                 <tr>
-                  <th className="th">Device</th>
-                  <th className="th">Status</th>
-                  <th className="th hidden xl:table-cell">Address</th>
-                  <th className="th hidden lg:table-cell">Today</th>
+                  <SortTh col="device" sort={sort} onSort={onSort}>Device</SortTh>
+                  <SortTh col="status" sort={sort} onSort={onSort}>Status</SortTh>
+                  <SortTh col="address" sort={sort} onSort={onSort} className="hidden xl:table-cell">Address</SortTh>
+                  <SortTh col="today" sort={sort} onSort={onSort} className="hidden lg:table-cell">Today</SortTh>
                   <th className="th text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {filtered.map((d) => (
+                {rows.map((d) => (
                   <tr key={d.id} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40" onClick={() => nav(`/devices/${d.id}`)}>
                     <td className="td">
                       <div className="flex items-center gap-3">
@@ -107,8 +163,8 @@ function DevicesView({ refresh }) {
                       <p className="mt-1 text-xs text-slate-500">{d.paused && d.block_reasons?.length ? d.block_reasons[0] : `${d.is_online ? 'Seen' : 'Last seen'} ${timeAgo(d.last_seen)}`}</p>
                     </td>
                     <td className="td hidden xl:table-cell">
-                      <p className="font-mono text-xs">{d.ip || '—'}</p>
-                      <p className="font-mono text-xs text-slate-400">{d.mac}{d.is_private_mac && <span title="Private / randomised address" className="ml-1 text-amber-500">•</span>}</p>
+                      <p className="flex items-center font-mono text-xs">{d.ip || '—'}<CopyButton value={d.ip} label="IP address" /></p>
+                      <p className="flex items-center font-mono text-xs text-slate-400">{d.mac}{d.is_private_mac && <span title="Private / randomised address" className="ml-1 text-amber-500">•</span>}<CopyButton value={d.mac} label="MAC address" /></p>
                     </td>
                     <td className="td hidden lg:table-cell">
                       {d.today_seconds ? (

@@ -5,6 +5,7 @@ using that app. Lookups closer together than the 'session gap' merge into one se
 """
 import asyncio
 import json
+import re
 import threading
 import time
 from datetime import datetime
@@ -21,12 +22,88 @@ _matcher_lock = threading.Lock()
 _matcher: dict | None = None
 
 
+_APP_FIELDS = ("category", "domains", "track_time", "hidden", "source", "reviewed", "adguard_id", "registrable")
+
+
+def catalog_snapshot() -> list[dict]:
+    """The whole 'Apps & categories' list, as saved in defaults / export files."""
+    return [{"id": r["id"], "name": r["name"], "category": r["category"], "domains": db.jload(r["domains"], []),
+             "track_time": bool(r["track_time"]), "hidden": bool(r["hidden"]), "source": r["source"] or "user",
+             "reviewed": bool(r["reviewed"] if r["reviewed"] is not None else 1), "adguard_id": r["adguard_id"],
+             "registrable": r["registrable"]}
+            for r in db.q("SELECT * FROM services ORDER BY name COLLATE NOCASE")]
+
+
+def _match_apps(apps: list[dict]) -> tuple[dict[int, dict], list[dict], list[dict]]:
+    """Pair each saved app with an existing one: same name first, else same id (e.g. renamed since).
+    Returns ({existing id: saved app}, saved apps with no match, existing apps not in the saved list)."""
+    cur = catalog_snapshot()
+    by_name = {c["name"].lower(): c for c in cur}
+    by_id = {c["id"]: c for c in cur}
+    paired: dict[int, dict] = {}
+    new = []
+    for a in apps:
+        c = by_name.get(a["name"].lower())
+        if c is None and a.get("id") in by_id and by_id[a["id"]]["name"].lower() not in {x["name"].lower() for x in apps}:
+            c = by_id[a["id"]]
+        if c is not None and c["id"] not in paired:
+            paired[c["id"]] = a
+        else:
+            new.append(a)
+    extra = [c for c in cur if c["id"] not in paired]
+    return paired, new, extra
+
+
+def catalog_diff(apps: list[dict]) -> dict:
+    """What applying a saved app list would change: names to add, update and remove."""
+    paired, new, extra = _match_apps(apps)
+    cur = {c["id"]: c for c in catalog_snapshot()}
+    changed = [a["name"] for cid, a in paired.items()
+               if a["name"] != cur[cid]["name"] or any(a[f] != cur[cid][f] for f in _APP_FIELDS)]
+    return {"add": sorted(a["name"] for a in new), "update": sorted(changed), "remove": sorted(c["name"] for c in extra)}
+
+
+def apply_catalog(apps: list[dict]) -> dict:
+    """Make 'Apps & categories' match a saved list. Existing apps are updated in place (keeping their history,
+    limits and schedules); apps not in the list are removed. Past lookups are re-labelled."""
+    diff = catalog_diff(apps)
+    paired, new, extra = _match_apps(apps)
+    now = time.time()
+    with db.transaction() as c:
+        for cid in (x["id"] for x in extra):
+            c.execute("DELETE FROM services WHERE id=?", (cid,))
+        for cid in paired:  # temporary names, so swapped/renamed apps never clash on the unique name
+            c.execute("UPDATE services SET name=? WHERE id=?", (f"\x00homenet-rename-{cid}", cid))
+        for cid, a in paired.items():
+            c.execute("UPDATE services SET name=?, category=?, domains=?, track_time=?, hidden=?, source=?, reviewed=?, "
+                      "adguard_id=?, registrable=? WHERE id=?",
+                      (a["name"], a["category"], json.dumps(a["domains"]), int(a["track_time"]), int(a["hidden"]),
+                       a["source"], int(a["reviewed"]), a["adguard_id"], a["registrable"], cid))
+        for a in new:
+            c.execute("INSERT INTO services(name, category, domains, track_time, hidden, source, reviewed, adguard_id, "
+                      "registrable, created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (a["name"], a["category"], json.dumps(a["domains"]), int(a["track_time"]), int(a["hidden"]),
+                       a["source"], int(a["reviewed"]), a["adguard_id"], a["registrable"], now))
+    if any(diff.values()):
+        invalidate_matcher()
+        rematch_recent()
+        touched = {r["id"] for r in db.q("SELECT id FROM services WHERE name IN ({})".format(
+            ",".join("?" * len(diff["add"] + diff["update"]))), diff["add"] + diff["update"])} if diff["add"] + diff["update"] else set()
+        for sid in touched:
+            rebuild_sessions(sid)
+    return diff
+
+
 def seed_services() -> list[int]:
-    """First run: load the whole starter catalog. Later versions: add only the newly introduced apps.
-    Returns ids of services added (so their past sessions can be rebuilt)."""
+    """First run: load your saved app list if there is one, else the whole starter catalog. Later versions: add
+    only the newly introduced apps. Returns ids of services added (so their past sessions can be rebuilt)."""
     if not S.get("catalog_seeded") and not db.val("SELECT COUNT(*) FROM services"):
-        db.exmany("INSERT OR IGNORE INTO services(name, category, domains, track_time, source, reviewed) VALUES(?,?,?,?,'builtin',1)",
-                  [(n, c, json.dumps(d), t) for n, c, d, t in DEFAULT_SERVICES])
+        own = S.saved_defaults().get("apps")
+        if own:
+            apply_catalog(own)
+        else:
+            db.exmany("INSERT OR IGNORE INTO services(name, category, domains, track_time, source, reviewed) VALUES(?,?,?,?,'builtin',1)",
+                      [(n, c, json.dumps(d), t) for n, c, d, t in DEFAULT_SERVICES])
         S.set("catalog_seeded", True)
         S.set("catalog_version", CATALOG_VERSION)
         return []
@@ -58,8 +135,9 @@ def apply_new_apps(service_ids: list[int]) -> None:
         if not row:
             continue
         for dom in db.jload(row["domains"], []):
-            db.ex("UPDATE dns_queries SET service_id=? WHERE service_id IS NULL AND (domain=? OR domain LIKE ?)",
-                  (sid, dom, "%." + dom))
+            like = dom.replace("*", "%")  # instagram.*.fbcdn.net → instagram.%.fbcdn.net
+            db.ex("UPDATE dns_queries SET service_id=? WHERE service_id IS NULL AND (domain LIKE ? OR domain LIKE ?)",
+                  (sid, like, "%." + like))
         rebuild_sessions(sid)
 
 
@@ -92,31 +170,57 @@ def invalidate_matcher() -> None:
         _matcher = None
 
 
+def _wildcard(dom: str) -> tuple[re.Pattern, int] | None:
+    """'instagram.*.fbcdn.net' → regex for it (and its sub-addresses), plus how specific it is (literal characters).
+    None if the pattern is too vague to be safe (fewer than two literal labels, e.g. 'instagram.*')."""
+    if len([p for p in dom.split(".") if p and "*" not in p]) < 2:
+        return None
+    body = ".".join("[^.]+" if p == "*" else re.escape(p).replace(r"\*", "[^.]*") for p in dom.split("."))
+    # A lone '*' label may stand for several labels (instagram.*.fbcdn.net matches instagram.fsyd3-2.fna.fbcdn.net).
+    body = body.replace(r"[^.]+", r"[^.]+(?:\.[^.]+)*")
+    return re.compile(rf"^(?:.+\.)?{body}$"), len(dom.replace("*", ""))
+
+
 def _get_matcher() -> dict:
     global _matcher
     with _matcher_lock:
         if _matcher is None:
-            m = {}
+            exact, wild = {}, []
             # Lower priority first, so for the same address a user/built-in app beats AdGuard's, which beats auto-detected.
             for s in db.q("SELECT id, domains FROM services ORDER BY CASE source WHEN 'auto' THEN 0 "
                           "WHEN 'adguard' THEN 1 ELSE 2 END, id"):
                 for dom in db.jload(s["domains"], []):
                     dom = dom.strip().lower().lstrip("*.").rstrip(".")
-                    if dom:
-                        m[dom] = s["id"]
-            _matcher = m
+                    if not dom:
+                        continue
+                    if "*" in dom:
+                        w = _wildcard(dom)
+                        if w:
+                            wild.append((w[0], w[1], s["id"]))
+                    else:
+                        exact[dom] = s["id"]
+            _matcher = {"exact": exact, "wild": wild}
         return _matcher
 
 
 def match_service(domain: str) -> int | None:
-    """Longest-suffix match, so music.youtube.com beats youtube.com."""
+    """Most specific match wins: longest matching suffix (music.youtube.com beats youtube.com), or a wildcard
+    entry with more literal characters (instagram.*.fbcdn.net beats fbcdn.net). On a tie the exact entry wins."""
     m = _get_matcher()
+    domain = (domain or "").lower()
+    best, best_len = None, 0
     parts = domain.split(".")
     for i in range(len(parts) - 1):
-        sid = m.get(".".join(parts[i:]))
+        key = ".".join(parts[i:])
+        sid = m["exact"].get(key)
         if sid:
-            return sid
-    return None
+            best, best_len = sid, len(key)
+            break
+    wild_sid, wild_len = None, 0
+    for rx, lit, sid in m["wild"]:  # in priority order, so a later (higher priority) entry wins a tie
+        if lit >= wild_len and rx.match(domain):
+            wild_sid, wild_len = sid, lit
+    return wild_sid if wild_sid and wild_len > best_len else best
 
 
 def rematch_recent(days: int = 30) -> None:

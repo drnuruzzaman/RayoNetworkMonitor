@@ -3,7 +3,7 @@ After that you can edit, add or delete every entry from the 'Apps & categories' 
 
 # Apps added after the first release, by catalog version. Existing installs get these once,
 # without re-adding anything the user deleted from the original list.
-CATALOG_VERSION = 3
+CATALOG_VERSION = 5
 
 DEFAULT_SERVICES = [
     # name, category, domains, track_time
@@ -54,6 +54,8 @@ DEFAULT_SERVICES = [
     ("Microsoft 365", "Productivity", ["office.com", "office.net", "sharepoint.com", "outlook.office365.com", "onedrive.live.com"], 1),
     ("Google Docs & Drive", "Productivity", ["docs.google.com", "drive.google.com"], 1),
     ("Gmail", "Productivity", ["mail.google.com"], 1),
+    ("Google Photos", "Productivity", ["photos.google.com", "photosdata-pa.googleapis.com", "photos.googleapis.com",
+                                       "photos.fife.usercontent.google.com"], 1),
     ("Amazon", "Shopping", ["amazon.com.au", "amazon.com"], 1),
     ("eBay", "Shopping", ["ebay.com.au", "ebay.com", "ebaystatic.com"], 1),
     ("Temu", "Shopping", ["temu.com", "kwcdn.com"], 1),
@@ -90,6 +92,32 @@ DEFAULT_SERVICES = [
     ("Studyladder", "Education", ["studyladder.com.au"], 1),
     ("Pokémon GO", "Gaming", ["nianticlabs.com", "pokemon.com"], 1),
     ("Among Us", "Gaming", ["innersloth.com"], 1),
+    # ---- v5: VPN and proxy apps (category "VPN" also feeds the AdGuard VPN blocklist HomeNet publishes)
+    ("NordVPN", "VPN", ["nordvpn.com", "nordvpn.net", "nordcdn.com", "nordaccount.com"], 1),
+    ("ExpressVPN", "VPN", ["expressvpn.com", "expressvpn.net", "expressapisv2.net"], 1),
+    ("Surfshark", "VPN", ["surfshark.com"], 1),
+    ("CyberGhost", "VPN", ["cyberghostvpn.com"], 1),
+    ("Private Internet Access", "VPN", ["privateinternetaccess.com", "piaservers.net"], 1),
+    ("ProtonVPN", "VPN", ["protonvpn.com", "protonvpn.ch", "protonvpn.net"], 1),
+    ("Windscribe", "VPN", ["windscribe.com", "windscribe.net"], 1),
+    ("TunnelBear", "VPN", ["tunnelbear.com"], 1),
+    ("Hotspot Shield", "VPN", ["hotspotshield.com", "pango.co"], 1),
+    ("IPVanish", "VPN", ["ipvanish.com"], 1),
+    ("Mullvad VPN", "VPN", ["mullvad.net"], 1),
+    ("PureVPN", "VPN", ["purevpn.com"], 1),
+    ("hide.me VPN", "VPN", ["hide.me"], 1),
+    ("Hola VPN", "VPN", ["hola.org"], 1),
+    ("Psiphon", "VPN", ["psiphon.ca", "psiphon3.com"], 1),
+    ("Urban VPN", "VPN", ["urban-vpn.com"], 1),
+    ("VyprVPN", "VPN", ["vyprvpn.com", "goldenfrog.com"], 1),
+    ("Atlas VPN", "VPN", ["atlasvpn.com"], 1),
+    ("Hide My Ass VPN", "VPN", ["hidemyass.com"], 1),
+    ("ZenMate", "VPN", ["zenmate.com"], 1),
+    ("Betternet", "VPN", ["betternet.co"], 1),
+    ("X-VPN", "VPN", ["xvpn.io"], 1),
+    ("Lantern", "VPN", ["getlantern.org"], 1),
+    ("Ultrasurf", "VPN", ["ultrasurf.us"], 1),
+    ("Tor Browser", "VPN", ["torproject.org"], 1),
     # Background traffic: shown in reports, not counted as screen time.
     ("Apple system", "System", ["apple.com", "icloud.com", "mzstatic.com", "apple-dns.net", "aaplimg.com", "cdn-apple.com", "icloud-content.com"], 0),
     ("Google system", "System", ["googleapis.com", "gstatic.com", "google.com", "android.com", "gvt1.com", "gvt2.com", "googleusercontent.com"], 0),
@@ -103,4 +131,8 @@ _V3 = {"YouTube Kids", "PBS Kids", "Kidoodle.TV", "Nick Jr.", "ABCya", "Toca Boc
        "Reading Eggs", "Mathseeds", "Prodigy Math", "Scratch", "Kahoot!", "Blooket", "Gimkit", "Seesaw",
        "ClassDojo", "Studyladder", "Pokémon GO", "Among Us"}
 # App names introduced in each catalog version.
-CATALOG_ADDED_IN = {2: _FINANCE, 3: _V3}
+_VPN = {"NordVPN", "ExpressVPN", "Surfshark", "CyberGhost", "Private Internet Access", "ProtonVPN", "Windscribe",
+        "TunnelBear", "Hotspot Shield", "IPVanish", "Mullvad VPN", "PureVPN", "hide.me VPN", "Hola VPN", "Psiphon",
+        "Urban VPN", "VyprVPN", "Atlas VPN", "Hide My Ass VPN", "ZenMate", "Betternet", "X-VPN", "Lantern", "Ultrasurf",
+        "Tor Browser"}
+CATALOG_ADDED_IN = {2: _FINANCE, 3: _V3, 4: {"Google Photos"}, 5: _VPN}

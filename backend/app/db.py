@@ -165,6 +165,13 @@ CREATE TABLE IF NOT EXISTS app_limits (
     enabled     INTEGER DEFAULT 1,
     created     REAL
 );
+CREATE TABLE IF NOT EXISTS device_background (
+    device_id   INTEGER NOT NULL,
+    domain      TEXT NOT NULL,
+    share       REAL,               -- fraction of the device's awake time this address showed up in
+    learned     REAL,
+    PRIMARY KEY (device_id, domain)
+);
 CREATE TABLE IF NOT EXISTS unknown_sites (
     registrable TEXT PRIMARY KEY,
     lookups     INTEGER DEFAULT 0,

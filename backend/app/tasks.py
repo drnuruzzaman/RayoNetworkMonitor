@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 
-from . import adguard, alerts, detect, dhcp, enforcer, psl, scanner, usage
+from . import activity, adguard, alerts, detect, dhcp, enforcer, psl, scanner, usage, vpnlist
 from . import settings_store as S
 from .state import STATUS
 
@@ -56,6 +56,11 @@ async def sync_loop():
                 except Exception as e:
                     log.warning("block-reason backfill failed: %s", e)
                 await catalog_maintenance()
+                try:
+                    if await vpnlist.sync_if_changed():
+                        log.info("VPN apps changed: asked AdGuard to re-download the VPN blocklist")
+                except Exception as e:
+                    log.warning("VPN blocklist refresh failed: %s", e)
                 if was_ok is False:
                     alerts.add("adguard_up", "AdGuard Home is reachable again", level="success")
             except Exception as e:
@@ -70,6 +75,12 @@ async def sync_loop():
                 usage.cleanup()
             except Exception as e:
                 log.warning("cleanup failed: %s", e)
+            if S.get("activity_learn_background"):
+                try:
+                    n = await asyncio.to_thread(activity.learn_background)
+                    log.info("learned %s background addresses across devices", n)
+                except Exception as e:
+                    log.warning("background learning failed: %s", e)
             last_cleanup = time.time()
         await _sleep("sync", S.get("adguard_poll_sec"))
 

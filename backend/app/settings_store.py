@@ -6,9 +6,15 @@ until the user changes something.
 """
 import json
 import threading
+import time
 
 from . import db
+from .config import DATA_DIR
 from .security import protect, unprotect
+
+# Your own defaults: a snapshot of settings saved from the Settings page. When present, every setting
+# without its own value uses it instead of the built-in default (also on a fresh setup with this file in place).
+DEFAULTS_FILE = DATA_DIR / "settings_defaults.json"
 
 SCHEMA: list[dict] = [
     # ---- General
@@ -79,6 +85,11 @@ SCHEMA: list[dict] = [
     dict(key="activity_bridge_min", group="usage", type="int", default=10, min=0, max=60,
          label="Join in-use periods separated by less than (minutes)",
          help="So reading an article or watching a long video isn't split into pieces."),
+    dict(key="activity_learn_background", group="usage", type="bool", default=True,
+         label="Learn each device's background chatter",
+         help="Addresses a device keeps contacting all day, used or not (e.g. a phone checking www.google.com every "
+              "minute), are learned from the last 7 days and ignored when deciding if someone is using it. "
+              "Until a device has a full day of history, only near-constant addresses are learned."),
     dict(key="retention_queries_days", group="usage", type="int", default=30, min=1, max=365,
          label="Keep detailed activity for (days)"),
     dict(key="retention_sessions_days", group="usage", type="int", default=365, min=7, max=3650,
@@ -147,10 +158,144 @@ _cache: dict = {}
 _lock = threading.Lock()
 
 
-def _default(key):
+_saved: dict | None = None  # parsed DEFAULTS_FILE, {} when there is none
+
+
+def portable_keys() -> list[str]:
+    """Settings that can be saved as defaults / exported. Secrets (passwords) never leave the database."""
+    return [s["key"] for s in SCHEMA if not s.get("secret")]
+
+
+def validate_values(values: dict) -> tuple[dict, list[str]]:
+    """Keep only known, non-secret settings with valid values. Returns (clean values, skipped keys)."""
+    ok, skipped, allowed = {}, [], {*portable_keys()}  # this module's set() shadows the builtin
+    for k, v in (values or {}).items():
+        if k not in allowed:
+            skipped.append(k)
+            continue
+        try:
+            ok[k] = coerce(k, v)
+        except (KeyError, ValueError, TypeError):
+            skipped.append(k)
+    return ok, skipped
+
+
+APP_SOURCES = {"builtin", "adguard", "auto", "user"}
+
+
+def validate_apps(apps) -> list[dict] | None:
+    """Clean an 'Apps & categories' list from a defaults/export file. None if there is no usable list."""
+    if not isinstance(apps, list):
+        return None
+    out, seen = [], {*()}  # empty set (this module's set() shadows the builtin)
+    for a in apps:
+        if not isinstance(a, dict):
+            continue
+        name, cat = str(a.get("name") or "").strip(), str(a.get("category") or "").strip()
+        doms = a.get("domains")
+        if not name or not cat or not isinstance(doms, list) or name.lower() in seen:
+            continue
+        doms = [d for d in dict.fromkeys(str(x).strip().lower().replace("https://", "").replace("http://", "")
+                                         .split("/")[0].lstrip("*.").rstrip(".") for x in doms) if d]
+        if not doms:
+            continue
+        seen.add(name.lower())
+        out.append({"id": a.get("id") if isinstance(a.get("id"), int) else None, "name": name, "category": cat,
+                    "domains": doms, "track_time": bool(a.get("track_time", True)), "hidden": bool(a.get("hidden", False)),
+                    "source": a.get("source") if a.get("source") in APP_SOURCES else "user",
+                    "reviewed": bool(a.get("reviewed", True)), "adguard_id": a.get("adguard_id") or None,
+                    "registrable": a.get("registrable") or None})
+    return out or None
+
+
+def saved_defaults() -> dict:
+    """{'saved': timestamp, 'settings': {...}, 'apps': [...] or None} from DEFAULTS_FILE, or {} if none / unreadable."""
+    global _saved
+    with _lock:
+        if _saved is not None:
+            return _saved
+    data: dict = {}
+    try:
+        raw = json.loads(DEFAULTS_FILE.read_text(encoding="utf-8"))
+        values, _ = validate_values(raw.get("settings") or {})
+        data = {"saved": raw.get("saved"), "settings": values, "apps": validate_apps(raw.get("apps"))}
+    except (OSError, ValueError, AttributeError):
+        pass
+    with _lock:
+        _saved = data
+    return data
+
+
+def builtin_default(key):
     if key in _BY_KEY:
         return _BY_KEY[key]["default"]
     return INTERNAL_DEFAULTS.get(key)
+
+
+def _default(key):
+    own = saved_defaults().get("settings") or {}
+    return own[key] if key in own else builtin_default(key)
+
+
+def snapshot() -> dict:
+    """Current value of every portable setting."""
+    return {k: get(k) for k in portable_keys()}
+
+
+def export_document(values: dict, apps: list[dict] | None = None) -> dict:
+    doc = {"app": "HomeNet", "kind": "settings", "version": 2, "saved": time.time(), "settings": values}
+    if apps:
+        doc["apps"] = apps
+    return doc
+
+
+def save_defaults(values: dict | None = None, apps: list[dict] | None = None) -> dict:
+    """Write values (default: the current settings) and optionally the app list as your own defaults.
+    Current settings and apps don't change."""
+    global _saved
+    clean, _ = validate_values(snapshot() if values is None else values)
+    _pin_current()
+    doc = export_document(clean, validate_apps(apps))
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = DEFAULTS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+    tmp.replace(DEFAULTS_FILE)
+    with _lock:
+        _saved = None
+        _cache.clear()
+    return doc
+
+
+def clear_defaults() -> None:
+    """Forget your own defaults; built-in ones apply again. Current settings don't change."""
+    global _saved
+    _pin_current()
+    DEFAULTS_FILE.unlink(missing_ok=True)
+    with _lock:
+        _saved = None
+        _cache.clear()
+
+
+def differing_keys() -> list[str]:
+    """Portable settings whose current value differs from the default (yours, else built-in)."""
+    return [k for k in portable_keys() if get(k) != _default(k)]
+
+
+def _pin_current() -> None:
+    """Store an explicit value for every portable setting still following a default, so changing or removing
+    the defaults file never silently changes live settings."""
+    have = {r["key"] for r in db.q("SELECT key FROM settings")}
+    for k in portable_keys():
+        if k not in have:
+            set(k, get(k))
+
+
+def reset_to_defaults() -> list[str]:
+    """Set every portable setting to its default (yours if saved, else built-in). Returns the keys that changed."""
+    changed = differing_keys()
+    for k in portable_keys():
+        set(k, _default(k))
+    return changed
 
 
 def get(key: str):

@@ -11,9 +11,9 @@ import ScreenTime from '../components/ScreenTime'
 import LimitsCard from '../components/Limits'
 import { UsingNow } from '../components/LiveNow'
 import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
-import { AssignDomainModal, ServicePicker } from '../components/Pickers'
+import { AssignDomainModal, OWN_APP, ServicePicker } from '../components/Pickers'
 import {
-  Badge, BarList, Button, Callout, Card, ConfirmModal, EmptyState, ErrorState, Loading, Segmented, StatusDot, Tabs, Toggle, useToast,
+  Badge, BarList, Button, Callout, Card, ConfirmModal, CopyButton, EmptyState, ErrorState, Loading, Segmented, StatusDot, Tabs, Toggle, useToast,
 } from '../components/ui'
 import { DAYS, RANGE_OPTIONS, categoryColor, clock, dateTime, duration, number, timeAgo } from '../lib/format'
 import { RuleModal } from './Schedules'
@@ -43,8 +43,8 @@ function OverviewTab({ device }) {
       <div className="space-y-6">
         <Card title="Details">
           <dl className="-my-2 divide-y divide-slate-100 dark:divide-slate-800">
-            <Info label="IP address" mono>{device.ip}</Info>
-            <Info label="MAC address" mono>{device.mac}</Info>
+            <Info label="IP address" mono>{device.ip && <span className="inline-flex items-center">{device.ip}<CopyButton value={device.ip} label="IP address" /></span>}</Info>
+            <Info label="MAC address" mono>{device.mac && <span className="inline-flex items-center">{device.mac}<CopyButton value={device.mac} label="MAC address" /></span>}</Info>
             <Info label="Maker">{device.vendor || (device.is_private_mac ? 'Hidden (private address)' : null)}</Info>
             <Info label="Reported name">{device.hostname}</Info>
             <Info label="First seen">{dateTime(device.first_seen)}</Info>
@@ -52,6 +52,20 @@ function OverviewTab({ device }) {
             <Info label="Last internet activity">{timeAgo(device.last_dns)}</Info>
             <Info label="Type">{TYPE_LABELS[device.type]}</Info>
           </dl>
+          {device.background_hosts?.length > 0 && (
+            <div className="mt-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+              <p className="text-sm font-medium">Background chatter (ignored)</p>
+              <p className="mb-2 text-xs text-slate-500">Addresses this device contacts all day whether or not anyone is using it. Learned from the last 7 days.</p>
+              <ul className="space-y-1">
+                {device.background_hosts.map((h) => (
+                  <li key={h.domain} className="flex justify-between gap-3 text-xs">
+                    <span className="truncate font-mono">{h.domain}</span>
+                    <span className="shrink-0 tabular-nums text-slate-500">{Math.round(h.share * 100)}% of the time</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {device.notes && <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/50">{device.notes}</p>}
         </Card>
       </div>
@@ -140,7 +154,14 @@ function ControlsTab({ device, reload }) {
       {device.is_self && <Callout tone="info">This is the PC running HomeNet. You can still set filters, but you can't pause it.</Callout>}
       <div className="grid gap-6 lg:grid-cols-3">
         <Card title="Always block these apps" subtitle="Blocked all day. For a daily allowance use Time limits; for set hours use a schedule." className="lg:col-span-2">
-          <ServicePicker value={c.blocked_services} onChange={set('blocked_services')} />
+          <ServicePicker ownApps
+            value={[...(c.blocked_services || []), ...(c.blocked_apps || []).map((id) => `${OWN_APP}${id}`)]}
+            onChange={(list) => setC((x) => ({
+              ...x,
+              blocked_services: list.filter((v) => !String(v).startsWith(OWN_APP)),
+              blocked_apps: list.filter((v) => String(v).startsWith(OWN_APP)).map((v) => Number(String(v).slice(OWN_APP.length))),
+            }))} />
+          <p className="help mt-3">"Yours" apps come from Apps &amp; categories and are blocked by their web addresses. Add any app there first to block it here.</p>
         </Card>
         <Card title="Filtering"
           actions={c.use_global ? <Badge color="green">AdGuard defaults</Badge> : <Badge color="blue">Custom</Badge>}>
@@ -263,7 +284,10 @@ function DeviceView({ id, refresh }) {
           <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold">{device.display_name}
             {device.is_self && <Badge color="blue">This PC</Badge>}{device.is_gateway && <Badge color="violet">Router</Badge>}
           </h1>
-          <p className="mt-1 text-sm text-slate-500">{[device.owner && `Belongs to ${device.owner}`, TYPE_LABELS[device.type], device.ip].filter(Boolean).join(' · ')}</p>
+          <p className="mt-1 flex flex-wrap items-center text-sm text-slate-500">
+            {[device.owner && `Belongs to ${device.owner}`, TYPE_LABELS[device.type], device.ip].filter(Boolean).join(' · ')}
+            {device.ip && <CopyButton value={device.ip} label="IP address" />}
+          </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusDot online={device.is_online} paused={device.paused} inUse={device.in_use} />
             {device.block_reasons.map((r) => <Badge key={r} color="red">{r}</Badge>)}

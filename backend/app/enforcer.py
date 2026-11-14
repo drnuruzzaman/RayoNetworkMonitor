@@ -125,6 +125,17 @@ def limits_usage(device_id: int | None = None) -> list[dict]:
     return out
 
 
+def app_blocks_now() -> dict[int, set[str]]:
+    """device_id → addresses of the HomeNet apps it always blocks (Controls → Always block these apps)."""
+    domains = {r["id"]: db.jload(r["domains"], []) for r in db.q("SELECT id, domains FROM services")}
+    blocks: dict[int, set[str]] = {}
+    for d in db.q("SELECT id, controls FROM devices"):
+        for sid in D.controls(d).get("blocked_apps") or []:
+            if domains.get(sid):
+                blocks.setdefault(d["id"], set()).update(domains[sid])
+    return blocks
+
+
 def limit_blocks_now() -> dict[int, set[str]]:
     """device_id → addresses to block because a time limit ran out today. Alerts once per day per limit."""
     from . import alerts
@@ -258,6 +269,8 @@ async def _enforce() -> dict:
     paused_ids = [did for did, st in state.items() if st["paused"]]
     try:
         limit_blocks = await asyncio.to_thread(limit_blocks_now)
+        for did, doms in (await asyncio.to_thread(app_blocks_now)).items():
+            limit_blocks.setdefault(did, set()).update(doms)
         ips = await _sync_pause_rules(paused_ids, limit_blocks)
         await _sync_clients(state)
         STATUS["enforcer"].update(last_run=now, error=None, blocked_ips=ips)

@@ -1,7 +1,44 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle2, ChevronDown, Info, Loader2, X, XCircle } from 'lucide-react'
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, Copy, Info, Loader2, X, XCircle } from 'lucide-react'
 
 export const cx = (...c) => c.filter(Boolean).join(' ')
+
+// ------------------------------------------------------------------ Copy to clipboard
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true }
+  } catch { /* fall back below */ }
+  // Plain http:// on the home network (e.g. from a phone) has no Clipboard API: use the old way.
+  const ta = Object.assign(document.createElement('textarea'), { value: text })
+  ta.setAttribute('readonly', '')
+  Object.assign(ta.style, { position: 'fixed', top: '-1000px', opacity: '0' })
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try { ok = document.execCommand('copy') } catch { ok = false }
+  ta.remove()
+  return ok
+}
+
+/** Small copy icon next to a value (IP, MAC…). Doesn't trigger the row/card click it sits in. */
+export function CopyButton({ value, label = 'value', className }) {
+  const [state, setState] = useState('idle') // idle | done | fail
+  if (!value) return null
+  const onClick = async (e) => {
+    e.stopPropagation(); e.preventDefault()
+    setState((await copyText(String(value))) ? 'done' : 'fail')
+    setTimeout(() => setState('idle'), 1500)
+  }
+  const Icon = state === 'done' ? Check : Copy
+  return (
+    <button type="button" onClick={onClick} title={state === 'done' ? 'Copied' : state === 'fail' ? "Couldn't copy" : `Copy ${label}`}
+      aria-label={`Copy ${label}`}
+      className={cx('ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded align-middle text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200',
+        state === 'done' && 'text-emerald-500 hover:text-emerald-500', state === 'fail' && 'text-red-500', className)}>
+      <Icon className="h-3.5 w-3.5" />
+    </button>
+  )
+}
 
 // ------------------------------------------------------------------ Button
 const VARIANTS = {
@@ -320,9 +357,10 @@ export function ToastProvider({ children }) {
   const push = useCallback((message, tone = 'success') => {
     const id = Math.random()
     setToasts((t) => [...t, { id, message, tone }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === 'error' ? 7000 : 3500)
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === 'error' || tone === 'warning' ? 7000 : 3500)
   }, [])
-  const icons = { success: [CheckCircle2, 'text-emerald-500'], error: [XCircle, 'text-red-500'], info: [Info, 'text-brand-500'] }
+  const icons = { success: [CheckCircle2, 'text-emerald-500'], error: [XCircle, 'text-red-500'], info: [Info, 'text-brand-500'],
+    warning: [AlertTriangle, 'text-amber-500'] }
   return (
     <ToastCtx.Provider value={push}>
       {children}

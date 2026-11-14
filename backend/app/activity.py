@@ -39,15 +39,90 @@ def _background_service_ids() -> set[int]:
     return {r["id"] for r in db.q("SELECT id FROM services WHERE track_time=0 OR hidden=1 OR category='System'")}
 
 
+# One app's own content network: only loads while someone scrolls or watches that app, so for "in use" it is
+# real activity (detect still treats them as infrastructure so they never become apps of their own).
+# Not whatsapp.net: WhatsApp downloads media in the background as messages arrive.
+APP_CONTENT_CDNS = {"fbcdn.net", "cdninstagram.com", "ggpht.com", "nflxso.net"}
+
+
 def _is_infra(domain: str) -> bool:
     v = _site_cache.get(domain)
     if v is None:
         site = psl.registrable(domain) or domain
-        v = detect.is_infrastructure(site)
+        v = site not in APP_CONTENT_CDNS and detect.is_infrastructure(site)
         if len(_site_cache) > 50000:
             _site_cache.clear()
         _site_cache[domain] = v
     return v
+
+
+# Background-chatter learning: an address a device contacts in a large share of *all* its awake time,
+# used or not, says nothing about whether someone is using it (e.g. a phone pinging www.google.com every minute).
+LEARN_DAYS = 7
+LEARN_SLOT = 600             # judge presence in 10-minute slots
+LEARN_MIN_AWAKE_SLOTS = 36   # need ~6 hours of the device's traffic before judging
+LEARN_MIN_HOST_SLOTS = 12    # and the address in at least 2 hours' worth of slots
+LEARN_SHARE = 0.40           # present in at least 40% of the device's awake slots → background
+# With under a day of history the data may be one long session (e.g. an evening on Facebook), so only learn
+# near-constant chatter until the device's history covers idle time (nights) too.
+LEARN_FULL_SPAN = 86400
+LEARN_SHARE_SHORT = 0.90
+_learned: dict[int, set[str]] | None = None
+
+
+def learned_background() -> dict[int, set[str]]:
+    """device_id → addresses learned as that device's background chatter (empty if learning is off)."""
+    global _learned
+    if not S.get("activity_learn_background"):
+        return {}
+    with _lock:
+        if _learned is None:
+            m: dict[int, set[str]] = {}
+            for r in db.q("SELECT device_id, domain FROM device_background"):
+                m.setdefault(r["device_id"], set()).add(r["domain"])
+            _learned = m
+        return _learned
+
+
+def learn_background(now: float | None = None) -> int:
+    """Re-learn every device's background chatter from the last LEARN_DAYS days. Returns addresses learned."""
+    global _learned
+    now = now or time.time()
+    lo = now - LEARN_DAYS * 86400
+    skip = non_human_device_ids()
+    bg = _background_service_ids()
+    awake, span = {}, {}
+    for r in db.q("SELECT device_id, COUNT(DISTINCT CAST(ts / ? AS INTEGER)) AS n, MIN(ts) AS first FROM dns_queries "
+                  "WHERE ts>=? AND device_id IS NOT NULL GROUP BY device_id", (LEARN_SLOT, lo)):
+        awake[r["device_id"]], span[r["device_id"]] = r["n"], now - r["first"]
+    rows = []
+    for r in db.q("SELECT device_id, domain, MAX(service_id) AS service_id, COUNT(DISTINCT CAST(ts / ? AS INTEGER)) AS n "
+                  "FROM dns_queries WHERE ts>=? AND device_id IS NOT NULL AND blocked=0 AND domain IS NOT NULL "
+                  "GROUP BY device_id, domain HAVING n>=?", (LEARN_SLOT, lo, LEARN_MIN_HOST_SLOTS)):
+        did, total = r["device_id"], awake.get(r["device_id"], 0)
+        if did in skip or total < LEARN_MIN_AWAKE_SLOTS or r["service_id"] in bg or _is_infra(r["domain"]):
+            continue
+        if (psl.registrable(r["domain"]) or r["domain"]) in APP_CONTENT_CDNS:
+            continue  # content loading means someone is scrolling/watching, never chatter
+        share = r["n"] / total
+        if share >= (LEARN_SHARE if span[did] >= LEARN_FULL_SPAN else LEARN_SHARE_SHORT):
+            rows.append((did, r["domain"], round(share, 3), now))
+    with db.transaction() as c:
+        c.execute("DELETE FROM device_background")
+        c.executemany("INSERT INTO device_background(device_id, domain, share, learned) VALUES(?,?,?,?)", rows)
+    with _lock:
+        _learned = None
+        _cache.clear()
+    return len(rows)
+
+
+def _app_specific(domain: str, service_id: int | None) -> bool:
+    """True if the app matched via its own sub-address, not by claiming the whole shared site."""
+    if not service_id:
+        return False
+    from .usage import match_service  # usage imports this module
+    site = psl.registrable(domain) or domain
+    return match_service(site) != service_id
 
 
 def _params() -> tuple[int, int, int]:
@@ -63,8 +138,11 @@ def _foreground_hosts(lo: float, hi: float, device_id: int | None, bucket: int) 
         params.append(device_id)
     out: dict[tuple[int, int], set] = {}
     skip = non_human_device_ids()
+    learned = learned_background()
     for r in db.q(sql, params):
         if r["device_id"] in skip or r["blocked"] or (r["service_id"] in bg) or not r["domain"] or _is_infra(r["domain"]):
+            continue
+        if r["domain"] in learned.get(r["device_id"], ()):
             continue
         out.setdefault((r["device_id"], int(r["ts"] // bucket)), set()).add(r["domain"])
     return out
@@ -113,9 +191,10 @@ def total(intervals: list[tuple[float, float]]) -> float:
 
 
 def current_activity(now: float | None = None) -> dict[int, dict]:
-    """For each device someone is using right now: which apps (most active first), since when.
+    """For each device someone is using right now: which apps (most recently opened first), since when.
 
-    "Current app" = the app with the most foreground lookups in the last activity window. "Since" = when its
+    "Current app" = of the apps seen in the last activity window, the one whose session started most recently
+    (ties: most lookups). "Since" = when its
     current session started, but never earlier than when the device's current in-use period began."""
     if not S.get("activity_detection"):
         return {}
@@ -124,16 +203,25 @@ def current_activity(now: float | None = None) -> dict[int, dict]:
     gap = S.get("usage_session_gap_min") * 60
     bg = _background_service_ids()
     skip = non_human_device_ids()
+    learned = learned_background()
     per: dict[int, dict] = {}
     for r in db.q("SELECT device_id, domain, service_id FROM dns_queries WHERE ts>=? AND ts<=? AND device_id IS NOT NULL "
                   "AND blocked=0", (now - bucket, now)):
         did = r["device_id"]
-        if did in skip or r["service_id"] in bg or not r["domain"] or _is_infra(r["domain"]):
+        if did in skip or r["service_id"] in bg or not r["domain"] or r["domain"] in learned.get(did, ()):
             continue
-        e = per.setdefault(did, {"hosts": set(), "apps": {}})
-        e["hosts"].add(r["domain"])
+        infra = _is_infra(r["domain"])
+        # Shared infrastructure (googleapis.com, …) is skipped, unless an app names that exact address
+        # (e.g. photosdata-pa.googleapis.com → Google Photos): then it tells us the app, but isn't a "host".
+        if infra and not _app_specific(r["domain"], r["service_id"]):
+            continue
+        e = per.setdefault(did, {"hosts": set(), "apps": {}, "domains": {}})
+        if not infra:
+            e["hosts"].add(r["domain"])
         if r["service_id"]:
             e["apps"][r["service_id"]] = e["apps"].get(r["service_id"], 0) + 1
+            doms = e["domains"].setdefault(r["service_id"], {})
+            doms[r["domain"]] = doms.get(r["domain"], 0) + 1
     if not per:
         return {}
     ivs_all = active_intervals(now - 12 * 3600, now)
@@ -145,14 +233,19 @@ def current_activity(now: float | None = None) -> dict[int, dict]:
         ivs = ivs_all.get(did, [])
         in_use_since = ivs[-1][0] if ivs and ivs[-1][1] >= now - bucket - bridge else now - bucket
         apps = []
-        for sid, n in sorted(e["apps"].items(), key=lambda x: -x[1])[:4]:
+        for sid, n in e["apps"].items():
             svc = names.get(sid)
             if not svc:
                 continue
             sess = db.q1("SELECT start FROM usage_sessions WHERE device_id=? AND service_id=? AND end>=? AND start<=? "
                          "ORDER BY end DESC LIMIT 1", (did, sid, now - gap, now))
             since = max(sess["start"] if sess else now - bucket, in_use_since)
-            apps.append({"service_id": sid, "service": svc["name"], "category": svc["category"], "since": since, "lookups": n})
+            top = max(e["domains"].get(sid, {"": 0}).items(), key=lambda x: x[1])[0]
+            domain = (psl.registrable(top) or top) if top else None
+            apps.append({"service_id": sid, "service": svc["name"], "category": svc["category"], "since": since, "lookups": n,
+                         "domain": domain})
+        # The app opened most recently is the one on screen; steady background pings started long ago.
+        apps = sorted(apps, key=lambda a: (-a["since"], -a["lookups"]))[:4]
         result[did] = {"in_use_since": in_use_since, "apps": apps, "now": now}
     return result
 
@@ -166,9 +259,12 @@ def in_use_now(now: float | None = None) -> dict[int, bool]:
     hosts: dict[int, set] = {}
     bg = _background_service_ids()
     skip = non_human_device_ids()
+    learned = learned_background()
     for r in db.q("SELECT device_id, domain, blocked, service_id FROM dns_queries WHERE ts>=? AND device_id IS NOT NULL",
                   (now - bucket,)):
         if r["device_id"] in skip or r["blocked"] or r["service_id"] in bg or not r["domain"] or _is_infra(r["domain"]):
+            continue
+        if r["domain"] in learned.get(r["device_id"], ()):
             continue
         hosts.setdefault(r["device_id"], set()).add(r["domain"])
     return {did: len(h) >= min_hosts for did, h in hosts.items()}

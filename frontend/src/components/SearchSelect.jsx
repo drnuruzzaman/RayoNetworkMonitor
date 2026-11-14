@@ -6,7 +6,7 @@ import { cx } from './ui'
  * Search box with a dropdown list. Click (or type) to see options, click one to pick it.
  * options: [{ value, label, icon?, hint?, group? }]
  */
-export default function SearchSelect({ options, onSelect, placeholder = 'Search…', exclude = [], emptyText = 'No matches' }) {
+export default function SearchSelect({ options, onSelect, placeholder = 'Search…', exclude = [], emptyText = 'No matches', limit = 150 }) {
   const [q, setQ] = useState('')
   const [open, setOpen] = useState(false)
   const [hi, setHi] = useState(0)
@@ -22,8 +22,8 @@ export default function SearchSelect({ options, onSelect, placeholder = 'Search�
   const ex = useMemo(() => new Set(exclude.map(String)), [exclude])
   const list = useMemo(() => {
     const s = q.trim().toLowerCase()
-    return options.filter((o) => !ex.has(String(o.value)) && (!s || `${o.label} ${o.hint || ''} ${o.group || ''}`.toLowerCase().includes(s))).slice(0, 150)
-  }, [options, q, ex])
+    return options.filter((o) => !ex.has(String(o.value)) && (!s || `${o.label} ${o.hint || ''} ${o.group || ''}`.toLowerCase().includes(s))).slice(0, limit)
+  }, [options, q, ex, limit])
 
   useEffect(() => setHi(0), [q, open])
   useEffect(() => {

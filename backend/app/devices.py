@@ -14,6 +14,7 @@ DEFAULT_CONTROLS = {
     "parental": False,
     "safebrowsing": True,
     "blocked_services": [],     # AdGuard service ids always blocked for this device
+    "blocked_apps": [],         # HomeNet app ids (Apps & categories) always blocked, via AdGuard custom rules
 }
 
 

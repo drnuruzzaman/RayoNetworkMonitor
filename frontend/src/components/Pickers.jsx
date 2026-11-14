@@ -8,28 +8,45 @@ const svcIcon = (s) => (s.icon_svg
   ? <img alt="" className="h-4 w-4 dark:invert" src={`data:image/svg+xml;base64,${s.icon_svg}`} />
   : <span className="h-4 w-4" />)
 
-/** Blocked apps as removable tags, plus a search box: click it to see AdGuard's app list, pick one to block. */
-export function ServicePicker({ value, onChange }) {
+/** Prefix for HomeNet's own apps (Apps & categories) in ServicePicker values, e.g. 'app:14'. */
+export const OWN_APP = 'app:'
+
+/** Blocked apps as removable tags, plus a search box: click it to see AdGuard's app list, pick one to block.
+ *  ownApps: also offer your own apps from Apps & categories (values 'app:<id>'), blocked by their web addresses. */
+export function ServicePicker({ value, onChange, ownApps = false }) {
   const { data, loading } = useApi('/adguard/services')
-  const byId = useMemo(() => Object.fromEntries((data?.services || []).map((s) => [s.id, s])), [data])
-  const options = useMemo(() => (data?.services || []).slice().sort((a, b) => a.name.localeCompare(b.name))
-    .map((s) => ({ value: s.id, label: s.name, icon: svcIcon(s) })), [data])
-  if (loading) return <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner />Loading apps…</div>
-  if (data?.error) return <Callout tone="warning">{data.error}</Callout>
+  const own = useApi(ownApps ? '/services' : null)
+  const ownList = useMemo(() => (own.data?.services || []).filter((s) => !s.hidden), [own.data])
+  const byId = useMemo(() => Object.fromEntries([
+    ...(data?.services || []).map((s) => [s.id, s]),
+    ...ownList.map((s) => [`${OWN_APP}${s.id}`, { name: s.name, own: true }]),
+  ]), [data, ownList])
+  const options = useMemo(() => {
+    const ag = (data?.services || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+      .map((s) => ({ value: s.id, label: s.name, icon: svcIcon(s), group: ownApps ? "AdGuard's list" : undefined }))
+    if (!ownApps) return ag
+    const mine = ownList.slice().sort((a, b) => a.name.localeCompare(b.name))
+      .map((s) => ({ value: `${OWN_APP}${s.id}`, label: s.name, hint: s.category, group: 'Your apps (Apps & categories)' }))
+    return [...mine, ...ag]
+  }, [data, ownList, ownApps])
+  if (loading || (ownApps && own.loading && !own.data)) return <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner />Loading apps…</div>
+  if (data?.error && !ownApps) return <Callout tone="warning">{data.error}</Callout>
   return (
     <div className="space-y-3">
+      {data?.error && <Callout tone="warning">{data.error} Your own apps can still be blocked.</Callout>}
       {value.length > 0 ? (
         <div className="flex flex-wrap gap-2">
           {value.map((id) => (
             <span key={id} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 py-1 pl-2.5 pr-1 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
-              {byId[id] ? svcIcon(byId[id]) : null}{byId[id]?.name || id}
+              {byId[id] && !byId[id].own ? svcIcon(byId[id]) : null}{byId[id]?.name || (String(id).startsWith(OWN_APP) ? 'Removed app' : id)}
+              {byId[id]?.own && <span className="rounded bg-red-100 px-1 text-[10px] font-semibold uppercase text-red-600 dark:bg-red-900/60 dark:text-red-300">Yours</span>}
               <button type="button" onClick={() => onChange(value.filter((v) => v !== id))} aria-label={`Unblock ${byId[id]?.name || id}`}
                 className="rounded p-0.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/50"><X className="h-3.5 w-3.5" /></button>
             </span>
           ))}
         </div>
       ) : <p className="text-sm text-slate-500">No apps blocked.</p>}
-      <SearchSelect options={options} exclude={value} placeholder="Search apps to block… (click to see the list)"
+      <SearchSelect options={options} exclude={value} placeholder="Search apps to block… (click to see the list)" limit={1000}
         onSelect={(id) => onChange([...value, id])} />
     </div>
   )
