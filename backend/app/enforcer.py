@@ -83,9 +83,81 @@ def device_ips(device_id: int) -> list[str]:
     return sorted(i for i in ips if i)
 
 
+# ------------------------------------------------------------------ daily time limits
+def limit_applies_today(lim: dict, now: datetime | None = None) -> bool:
+    now = now or datetime.now()
+    return bool(lim["enabled"]) and now.weekday() in set(db.jload(lim["days"], []))
+
+
+def limit_target(lim: dict) -> tuple[str, list[str]]:
+    """(display name, addresses to block) for an app or a whole category."""
+    if lim["target_type"] == "app":
+        s = db.q1("SELECT name, domains FROM services WHERE id=?", (int(lim["target"]),))
+        return (s["name"], db.jload(s["domains"], [])) if s else ("Removed app", [])
+    rows = db.q("SELECT domains FROM services WHERE category=? AND track_time=1 AND IFNULL(hidden,0)=0", (lim["target"],))
+    doms = sorted({d for r in rows for d in db.jload(r["domains"], [])})
+    return lim["target"], doms
+
+
+def limits_usage(device_id: int | None = None) -> list[dict]:
+    """Every limit with how much of it each device has used today."""
+    from . import usage
+    lims = db.q("SELECT * FROM app_limits ORDER BY id")
+    summaries: dict[int, dict] = {}
+    out = []
+    for lim in lims:
+        dids = db.jload(lim["device_ids"], [])
+        if device_id and device_id not in dids:
+            continue
+        name, domains = limit_target(lim)
+        per_dev = []
+        for did in dids:
+            if did not in summaries:
+                summaries[did] = usage.summary("today", did)
+            sm = summaries[did]
+            if lim["target_type"] == "app":
+                used = sum(s["seconds"] for s in sm["services"] if str(s["service_id"]) == str(lim["target"]))
+            else:
+                used = sum(c["seconds"] for c in sm["categories"] if c["category"] == lim["target"])
+            per_dev.append({"device_id": did, "used_seconds": used, "reached": used >= lim["minutes"] * 60})
+        out.append({**lim, "device_ids": dids, "days": db.jload(lim["days"], []), "enabled": bool(lim["enabled"]),
+                    "target_name": name, "domains": domains, "applies_today": limit_applies_today(lim), "usage": per_dev})
+    return out
+
+
+def limit_blocks_now() -> dict[int, set[str]]:
+    """device_id → addresses to block because a time limit ran out today. Alerts once per day per limit."""
+    from . import alerts
+    blocks: dict[int, set[str]] = {}
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+    for lim in limits_usage():
+        if not lim["applies_today"] or not lim["domains"]:
+            continue
+        for u in lim["usage"]:
+            if not u["reached"]:
+                continue
+            blocks.setdefault(u["device_id"], set()).update(lim["domains"])
+            kind = f"limit_reached:{lim['id']}"
+            if not alerts.recent_exists(kind, u["device_id"], time.time() - midnight):
+                d = D.get(u["device_id"])
+                if d:
+                    alerts.add(kind, f"{lim['target_name']} time limit reached on {D.display_name(d)}",
+                               f"{lim['minutes']} minutes used. It's blocked until midnight.", level="warning",
+                               device_id=u["device_id"])
+    return blocks
+
+
 # ------------------------------------------------------------------ AdGuard sync
-async def _sync_pause_rules(paused_ids: list[int]) -> list[str]:
+async def _sync_pause_rules(paused_ids: list[int], limit_blocks: dict[int, set[str]] | None = None) -> list[str]:
+    """Write HomeNet's managed block of AdGuard custom rules:
+    pauses (block everything) and time limits that have run out (block that app's addresses)."""
     ips = sorted({ip for did in paused_ids for ip in device_ips(did)})
+    limit_lines = []
+    for did, domains in (limit_blocks or {}).items():
+        if did in paused_ids:
+            continue
+        for ip in device_ips(did):
+            limit_lines += [f"||{dom}^$client={ip},important" for dom in sorted(domains)]
     status = await adguard.filtering_status()
     rules = list(status.get("user_rules") or [])
     kept, inside = [], False
@@ -101,8 +173,8 @@ async def _sync_pause_rules(paused_ids: list[int]) -> list[str]:
     while kept and not kept[-1].strip():
         kept.pop()
     new = list(kept)
-    if ips:
-        new += ([""] if kept else []) + [BEGIN] + [f"||*^$client={ip},important" for ip in ips] + [END]
+    if ips or limit_lines:
+        new += ([""] if kept else []) + [BEGIN] + [f"||*^$client={ip},important" for ip in ips] + limit_lines + [END]
     if new != rules:
         await adguard.set_user_rules(new)
     return ips
@@ -185,7 +257,8 @@ async def _enforce() -> dict:
     state = device_block_state(now)
     paused_ids = [did for did, st in state.items() if st["paused"]]
     try:
-        ips = await _sync_pause_rules(paused_ids)
+        limit_blocks = await asyncio.to_thread(limit_blocks_now)
+        ips = await _sync_pause_rules(paused_ids, limit_blocks)
         await _sync_clients(state)
         STATUS["enforcer"].update(last_run=now, error=None, blocked_ips=ips)
     except Exception as e:

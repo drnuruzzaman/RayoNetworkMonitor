@@ -11,7 +11,7 @@ export const TYPE_LABELS = {
   speaker: 'Smart speaker', camera: 'Camera', iot: 'Smart home', router: 'Router / network', printer: 'Printer', unknown: 'Unknown',
 }
 
-export default function DeviceIcon({ type, online, paused, size = 'md' }) {
+export default function DeviceIcon({ type, online, paused, inUse, size = 'md' }) {
   const Icon = ICONS[type] || HelpCircle
   const box = size === 'lg' ? 'h-14 w-14 rounded-2xl' : size === 'sm' ? 'h-8 w-8 rounded-lg' : 'h-10 w-10 rounded-xl'
   const ic = size === 'lg' ? 'h-7 w-7' : size === 'sm' ? 'h-4 w-4' : 'h-5 w-5'
@@ -22,7 +22,7 @@ export default function DeviceIcon({ type, online, paused, size = 'md' }) {
           : 'bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500')}>
       <Icon className={ic} />
       <span className={cx('absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white dark:border-slate-900',
-        paused ? 'bg-red-500' : online ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600')} />
+        paused ? 'bg-red-500' : !online ? 'bg-slate-300 dark:bg-slate-600' : inUse === false ? 'bg-orange-500' : 'bg-emerald-500')} />
     </span>
   )
 }

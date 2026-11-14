@@ -37,7 +37,8 @@ export const RANGE_OPTIONS = [
 
 export const CATEGORY_COLORS = {
   Video: '#ef4444', Social: '#ec4899', Gaming: '#8b5cf6', Messaging: '#06b6d4', Music: '#22c55e',
-  Education: '#f59e0b', Productivity: '#3b66f5', Shopping: '#f97316', AI: '#14b8a6', System: '#94a3b8',
+  Education: '#f59e0b', Productivity: '#3b66f5', Shopping: '#f97316', AI: '#14b8a6', System: '#94a3b8', Finance: '#10b981', Kids: '#facc15', Government: '#0ea5e9', Gambling: '#b91c1c', News: '#64748b',
+  Privacy: '#6366f1', Other: '#a8a29e', Background: '#cbd5e1',
 }
 const FALLBACK = ['#0ea5e9', '#a855f7', '#84cc16', '#e11d48', '#eab308', '#10b981', '#6366f1']
 export function categoryColor(cat) {

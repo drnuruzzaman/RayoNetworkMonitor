@@ -6,6 +6,9 @@ import { PresenceStrip, UsageTimeline } from '../components/Charts'
 import DeviceIcon, { TYPE_LABELS } from '../components/DeviceIcon'
 import EditDeviceModal from '../components/EditDeviceModal'
 import PauseButton from '../components/PauseButton'
+import BlockReasons from '../components/BlockReasons'
+import ScreenTime from '../components/ScreenTime'
+import LimitsCard from '../components/Limits'
 import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
 import { AssignDomainModal, ServicePicker } from '../components/Pickers'
 import {
@@ -25,27 +28,18 @@ function Info({ label, children, mono }) {
 
 function OverviewTab({ device }) {
   const { data: pres } = useApi(`/devices/${device.id}/presence?range=today`)
-  const { data: usage } = useApi(`/usage/summary?range=today&device_id=${device.id}`)
   const start = new Date(); start.setHours(0, 0, 0, 0)
   const s = start.getTime() / 1000
   const onlineSec = (pres?.sessions || []).reduce((a, x) => a + (x.end - x.start), 0)
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       <div className="space-y-6 lg:col-span-2">
-        <Card title="Connected today" subtitle={pres ? `Online for ${duration(onlineSec)} so far` : ''}>
-          <PresenceStrip sessions={pres?.sessions || []} start={s} end={s + 86400} />
+        <Card title="Connected today" subtitle={pres ? `Connected ${duration(onlineSec)} · actually in use ${duration(pres.in_use_seconds || 0)}` : ''}>
+          <PresenceStrip sessions={pres?.sessions || []} inUse={pres?.in_use || []} start={s} end={s + 86400} />
         </Card>
-        <Card title="App activity today" subtitle={usage ? `${duration(usage.total_seconds)} estimated screen time` : ''}>
-          <UsageTimeline data={usage?.timeline || []} height={200} />
-        </Card>
+        <ScreenTime deviceId={device.id} />
       </div>
       <div className="space-y-6">
-        <Card title="Top apps today">
-          {usage?.services?.length ? (
-            <BarList items={usage.services.slice(0, 8).map((x) => ({ key: x.service_id, label: x.service, value: x.seconds, category: x.category }))}
-              format={duration} colorFor={(i) => categoryColor(i.category)} />
-          ) : <p className="text-sm text-slate-500">No app activity recorded today.</p>}
-        </Card>
         <Card title="Details">
           <dl className="-my-2 divide-y divide-slate-100 dark:divide-slate-800">
             <Info label="IP address" mono>{device.ip}</Info>
@@ -68,7 +62,8 @@ function ActivityTab({ device }) {
   const [range, setRange] = useState('today')
   const [assign, setAssign] = useState(null)
   const sessions = useApi(`/usage/sessions?range=${range}&device_id=${device.id}`)
-  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60`)
+  const [showBackground, setShowBackground] = useState(false)
+  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60&in_use=${!showBackground}`)
   return (
     <div className="space-y-6">
       <Segmented value={range} onChange={setRange} options={RANGE_OPTIONS} />
@@ -87,15 +82,25 @@ function ActivityTab({ device }) {
             </ul>
           )}
         </Card>
-        <Card title="Websites & services" subtitle="Most looked-up addresses. Assign unknown ones to an app." bodyClass="max-h-[32rem] overflow-y-auto">
-          {!domains.data?.domains?.length ? <EmptyState icon={Globe} title="No lookups" description="Activity appears once this device uses AdGuard Home for DNS." /> : (
+        <Card title="Websites & services" bodyClass="max-h-[32rem] overflow-y-auto"
+          subtitle={showBackground ? 'Everything looked up, including background traffic while idle or locked.' : 'What was used while someone was actually using the device.'}
+          actions={<label className="flex items-center gap-2 whitespace-nowrap text-xs text-slate-500"><Toggle checked={showBackground} onChange={setShowBackground} />Show background</label>}>
+          {!domains.data?.domains?.length ? (
+            <EmptyState icon={Globe} title={showBackground ? 'No lookups' : 'Not used in this period'}
+              description={showBackground ? 'Activity appears once this device uses AdGuard Home for DNS.' : 'There was only background traffic (e.g. screen locked). Turn on "Show background" to see it.'} />
+          ) : (
             <table className="min-w-full text-sm">
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {domains.data.domains.map((x) => (
                   <tr key={x.domain}>
-                    <td className="px-5 py-2"><p className="max-w-[16rem] truncate font-mono text-xs" title={x.domain}>{x.domain}</p></td>
-                    <td className="px-2 py-2">{x.service ? <Badge color="blue">{x.service}</Badge> : <button className="link text-xs" onClick={() => setAssign(x.domain)}>Assign…</button>}</td>
-                    <td className="px-2 py-2 text-right tabular-nums text-slate-500">{number(x.queries)}{x.blocked ? <span className="ml-1 text-red-500">({x.blocked} blocked)</span> : ''}</td>
+                    <td className="px-5 py-2 align-top">
+                      <p className="max-w-[16rem] truncate font-mono text-xs" title={x.domain}>{x.domain}</p>
+                      <BlockReasons items={x.blocked_by} />
+                    </td>
+                    <td className="px-2 py-2 align-top">{x.service ? <Badge color="blue">{x.service}</Badge> : <button className="link text-xs" onClick={() => setAssign(x.domain)}>Assign…</button>}</td>
+                    <td className="whitespace-nowrap px-2 py-2 text-right align-top tabular-nums text-slate-500" title={x.blocked ? `${x.blocked} of ${x.queries} lookups blocked` : `${x.queries} lookups`}>
+                      {number(x.queries)}{x.blocked ? <span className="ml-1 text-xs text-red-500">({x.blocked} blocked)</span> : ''}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -117,6 +122,14 @@ function ControlsTab({ device, reload }) {
   useEffect(() => setC(JSON.parse(saved)), [saved])
   const dirty = JSON.stringify(c) !== JSON.stringify(device.controls)
   const set = (k) => (v) => setC((x) => ({ ...x, [k]: v }))
+  const { data: global } = useApi('/adguard/global-filters')
+  const FILTERS = ['filtering', 'safebrowsing', 'parental', 'safe_search']
+  // While following AdGuard, show AdGuard's own (global) values. Changing any switch makes this device custom.
+  const shown = (k) => (c.use_global && global?.available ? global[k] : c[k])
+  const flip = (k) => (v) => setC((x) => {
+    const base = x.use_global && global?.available ? Object.fromEntries(FILTERS.map((f) => [f, global[f]])) : {}
+    return { ...x, ...base, use_global: false, [k]: v }
+  })
   const save = async () => {
     setBusy(true)
     try { await api(`/devices/${device.id}/controls`, { method: 'PUT', body: c }); toast('Controls saved'); reload() } catch (e) { toast(e.message, 'error') } finally { setBusy(false) }
@@ -125,19 +138,21 @@ function ControlsTab({ device, reload }) {
     <div className="space-y-6">
       {device.is_self && <Callout tone="info">This is the PC running HomeNet. You can still set filters, but you can't pause it.</Callout>}
       <div className="grid gap-6 lg:grid-cols-3">
-        <Card title="Always block these apps" subtitle="Blocked all day. For time-based blocking, use a schedule." className="lg:col-span-2">
+        <Card title="Always block these apps" subtitle="Blocked all day. For a daily allowance use Time limits; for set hours use a schedule." className="lg:col-span-2">
           <ServicePicker value={c.blocked_services} onChange={set('blocked_services')} />
         </Card>
-        <Card title="Filtering">
+        <Card title="Filtering"
+          actions={c.use_global ? <Badge color="green">AdGuard defaults</Badge> : <Badge color="blue">Custom</Badge>}>
           <div className="space-y-5">
-            <Toggle checked={c.use_global} onChange={set('use_global')} label="Use AdGuard's default filters" description="Turn off to choose filters just for this device." />
-            <div className={c.use_global ? 'pointer-events-none space-y-5 opacity-50' : 'space-y-5'}>
-              <Toggle checked={c.filtering} onChange={set('filtering')} label="Block ads & trackers" />
-              <Toggle checked={c.safebrowsing} onChange={set('safebrowsing')} label="Block malware & phishing" />
-              <Toggle checked={c.parental} onChange={set('parental')} label="Block adult websites" />
-              <Toggle checked={c.safe_search} onChange={set('safe_search')} label="Force safe search" description="Google, Bing, YouTube and others." />
-            </div>
-            {!c.use_global && !c.filtering && <Callout tone="warning">With filtering off, pausing this device won't work.</Callout>}
+            <Toggle checked={shown('filtering')} onChange={flip('filtering')} label="Block ads & trackers" />
+            <Toggle checked={shown('safebrowsing')} onChange={flip('safebrowsing')} label="Block malware & phishing" />
+            <Toggle checked={shown('parental')} onChange={flip('parental')} label="Block adult websites" />
+            <Toggle checked={shown('safe_search')} onChange={flip('safe_search')} label="Force safe search" description="Google, Bing, YouTube and others." />
+            <p className="help">{c.use_global
+              ? "Following AdGuard Home's settings. Change any switch to customise it for this device."
+              : 'Custom for this device. AdGuard’s filter lists still apply when "Block ads & trackers" is on.'}</p>
+            {!c.use_global && <Button size="sm" variant="secondary" onClick={() => setC((x) => ({ ...x, use_global: true }))}>Reset to AdGuard defaults</Button>}
+            {!shown('filtering') && <Callout tone="warning">With ad & tracker filtering off, pausing, schedules and time limits won't work on this device.</Callout>}
           </div>
         </Card>
       </div>
@@ -145,12 +160,15 @@ function ControlsTab({ device, reload }) {
         <Button variant="secondary" disabled={!dirty} onClick={() => setC(device.controls)}>Discard</Button>
         <Button disabled={!dirty} loading={busy} onClick={save}>Save controls</Button>
       </div>
+      <LimitsCard device={device} />
     </div>
   )
 }
 
 function SchedulesTab({ device, reload }) {
   const [editing, setEditing] = useState(null)
+  const [deleting, setDeleting] = useState(null)
+  const toast = useToast()
   return (
     <Card title="Schedules for this device" actions={<Button size="sm" icon={Plus} onClick={() => setEditing({ device_ids: [device.id] })}>Add schedule</Button>} bodyClass="">
       {!device.rules.length ? <EmptyState icon={CalendarClock} title="No schedules" description="Set bedtime or homework hours to pause internet or block apps automatically." /> : (
@@ -162,11 +180,19 @@ function SchedulesTab({ device, reload }) {
                 <p className="text-xs text-slate-500">{r.action === 'pause_internet' ? 'Pause internet' : `Block ${r.services.length} app${r.services.length === 1 ? '' : 's'}`} · {r.start}–{r.end} · {r.days.map((d) => DAYS[d]).join(', ')}</p>
               </div>
               <Button size="sm" variant="ghost" icon={Pencil} onClick={() => setEditing(r)}>Edit</Button>
+              <Button size="sm" variant="ghost" icon={Trash2} className="text-red-600 dark:text-red-400" aria-label="Delete schedule" title="Delete schedule" onClick={() => setDeleting(r)} />
             </li>
           ))}
         </ul>
       )}
       {editing && <RuleModal rule={editing} onClose={() => setEditing(null)} onSaved={reload} />}
+      <ConfirmModal open={!!deleting} onClose={() => setDeleting(null)} danger title="Delete schedule?" confirmLabel="Delete"
+        message={deleting && deleting.device_ids.length > 1
+          ? `"${deleting.name}" also applies to ${deleting.device_ids.length - 1} other device${deleting.device_ids.length > 2 ? 's' : ''}. Deleting it removes it for all of them.`
+          : `"${deleting?.name}" will stop running straight away.`}
+        onConfirm={async () => {
+          try { await api(`/rules/${deleting.id}`, { method: 'DELETE' }); toast('Schedule deleted'); setDeleting(null); reload() } catch (e) { toast(e.message, 'error') }
+        }} />
     </Card>
   )
 }
@@ -231,14 +257,14 @@ function DeviceView({ id, refresh }) {
         <RefreshControl state={refresh} />
       </div>
       <div className="card mb-6 flex flex-col gap-5 p-5 sm:flex-row sm:items-center">
-        <DeviceIcon type={device.type} online={device.is_online} paused={device.paused} size="lg" />
+        <DeviceIcon type={device.type} online={device.is_online} paused={device.paused} inUse={device.in_use} size="lg" />
         <div className="min-w-0 flex-1">
           <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold">{device.display_name}
             {device.is_self && <Badge color="blue">This PC</Badge>}{device.is_gateway && <Badge color="violet">Router</Badge>}
           </h1>
           <p className="mt-1 text-sm text-slate-500">{[device.owner && `Belongs to ${device.owner}`, TYPE_LABELS[device.type], device.ip].filter(Boolean).join(' · ')}</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <StatusDot online={device.is_online} paused={device.paused} />
+            <StatusDot online={device.is_online} paused={device.paused} inUse={device.in_use} />
             {device.block_reasons.map((r) => <Badge key={r} color="red">{r}</Badge>)}
             {device.is_private_mac && <Badge color="amber" title="This device uses a private/random MAC address">Private address</Badge>}
           </div>

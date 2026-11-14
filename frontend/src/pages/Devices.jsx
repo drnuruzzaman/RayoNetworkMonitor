@@ -90,7 +90,7 @@ function DevicesView({ refresh }) {
                   <tr key={d.id} className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/40" onClick={() => nav(`/devices/${d.id}`)}>
                     <td className="td">
                       <div className="flex items-center gap-3">
-                        <DeviceIcon type={d.type} online={d.is_online} paused={d.paused} />
+                        <DeviceIcon type={d.type} online={d.is_online} paused={d.paused} inUse={d.in_use} />
                         <div className="min-w-0">
                           <p className="flex items-center gap-2 font-medium text-slate-900 dark:text-white">
                             <span className="truncate">{d.display_name}</span>
@@ -103,7 +103,7 @@ function DevicesView({ refresh }) {
                       </div>
                     </td>
                     <td className="td">
-                      <StatusDot online={d.is_online} paused={d.paused} />
+                      <StatusDot online={d.is_online} paused={d.paused} inUse={d.in_use} />
                       <p className="mt-1 text-xs text-slate-500">{d.paused && d.block_reasons?.length ? d.block_reasons[0] : `${d.is_online ? 'Seen' : 'Last seen'} ${timeAgo(d.last_seen)}`}</p>
                     </td>
                     <td className="td hidden xl:table-cell">

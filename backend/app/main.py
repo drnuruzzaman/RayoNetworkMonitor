@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, dhcp, tasks, usage
+from . import db, detect, dhcp, psl, tasks, usage
 from .api import api, public
 from .config import FRONTEND_DIST, VERSION
 
@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI):
 
     loop.set_exception_handler(quiet_disconnects)
     db.init()
+    psl.load_from_disk()
     usage.seed_services()
+    detect.redo_if_rules_changed()
     running = tasks.start()
     yield
     for t in running:

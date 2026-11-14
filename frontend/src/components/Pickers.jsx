@@ -1,35 +1,36 @@
 import { useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { X } from 'lucide-react'
 import { api, useApi } from '../api'
-import { Button, Callout, Field, Modal, Select, Spinner, cx, useToast } from './ui'
+import SearchSelect from './SearchSelect'
+import { Button, Callout, Field, Modal, Select, Spinner, useToast } from './ui'
 
-/** Grid of AdGuard's blockable services (YouTube, TikTok, Roblox…) with checkboxes. */
+const svcIcon = (s) => (s.icon_svg
+  ? <img alt="" className="h-4 w-4 dark:invert" src={`data:image/svg+xml;base64,${s.icon_svg}`} />
+  : <span className="h-4 w-4" />)
+
+/** Blocked apps as removable tags, plus a search box: click it to see AdGuard's app list, pick one to block. */
 export function ServicePicker({ value, onChange }) {
   const { data, loading } = useApi('/adguard/services')
-  const [q, setQ] = useState('')
-  const selected = new Set(value)
-  const list = useMemo(() => (data?.services || []).filter((s) => !q || s.name.toLowerCase().includes(q.toLowerCase()))
-    .sort((a, b) => (selected.has(b.id) - selected.has(a.id)) || a.name.localeCompare(b.name)), [data, q]) // eslint-disable-line
+  const byId = useMemo(() => Object.fromEntries((data?.services || []).map((s) => [s.id, s])), [data])
+  const options = useMemo(() => (data?.services || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+    .map((s) => ({ value: s.id, label: s.name, icon: svcIcon(s) })), [data])
   if (loading) return <div className="flex items-center gap-2 text-sm text-slate-500"><Spinner />Loading apps…</div>
   if (data?.error) return <Callout tone="warning">{data.error}</Callout>
-  const toggle = (id) => onChange(selected.has(id) ? value.filter((v) => v !== id) : [...value, id])
   return (
-    <div>
-      <div className="relative mb-3">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
-        <input className="input pl-9" placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} />
-      </div>
-      <div className="grid max-h-80 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
-        {list.map((s) => (
-          <button type="button" key={s.id} onClick={() => toggle(s.id)}
-            className={cx('flex items-center gap-2 rounded-lg border px-3 py-2 text-left text-sm transition',
-              selected.has(s.id) ? 'border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950/40 dark:text-red-200' : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:hover:bg-slate-800')}>
-            {s.icon_svg ? <img alt="" className="h-4 w-4 dark:invert" src={`data:image/svg+xml;base64,${s.icon_svg}`} /> : <span className="h-4 w-4" />}
-            <span className="truncate">{s.name}</span>
-          </button>
-        ))}
-      </div>
-      <p className="help mt-2">{value.length} selected. Red means blocked.</p>
+    <div className="space-y-3">
+      {value.length > 0 ? (
+        <div className="flex flex-wrap gap-2">
+          {value.map((id) => (
+            <span key={id} className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 py-1 pl-2.5 pr-1 text-sm text-red-800 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200">
+              {byId[id] ? svcIcon(byId[id]) : null}{byId[id]?.name || id}
+              <button type="button" onClick={() => onChange(value.filter((v) => v !== id))} aria-label={`Unblock ${byId[id]?.name || id}`}
+                className="rounded p-0.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/50"><X className="h-3.5 w-3.5" /></button>
+            </span>
+          ))}
+        </div>
+      ) : <p className="text-sm text-slate-500">No apps blocked.</p>}
+      <SearchSelect options={options} exclude={value} placeholder="Search apps to block… (click to see the list)"
+        onSelect={(id) => onChange([...value, id])} />
     </div>
   )
 }

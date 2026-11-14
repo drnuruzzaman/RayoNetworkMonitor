@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { Bell, BookOpen, Database, Factory, KeyRound, Network, PlugZap, RotateCw, Save, ShieldCheck, SlidersHorizontal } from 'lucide-react'
+import { Bell, BookOpen, Database, Factory, KeyRound, Network, PlugZap, RotateCw, Save, ShieldCheck, SlidersHorizontal, Sparkles } from 'lucide-react'
 import { api, useApi } from '../api'
 import { AdGuardInstallGuide, DnsGuide } from '../components/Guides'
 import { Button, Callout, Card, ErrorState, Field, Loading, PageHeader, Select, Tabs, Toggle, useToast } from '../components/ui'
@@ -11,6 +11,7 @@ const GROUPS = [
   { value: 'network', label: 'Network scanning', icon: Network, title: 'Device discovery' },
   { value: 'adguard', label: 'AdGuard Home', icon: ShieldCheck, title: 'AdGuard Home connection' },
   { value: 'usage', label: 'Usage & history', icon: Database, title: 'Usage tracking & data retention' },
+  { value: 'detection', label: 'App detection', icon: Sparkles, title: 'Automatic app detection' },
   { value: 'alerts', label: 'Alerts', icon: Bell, title: 'Alerts' },
   { value: 'vendor', label: 'Manufacturers', icon: Factory, title: 'Manufacturer lookup' },
   { value: 'security', label: 'Password', icon: KeyRound },

@@ -6,14 +6,14 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import adguard, alerts, db, dhcp, diagnostics, enforcer, netinfo, oui, scanner, tasks, usage
+from . import activity, adguard, alerts, db, detect, dhcp, diagnostics, enforcer, netinfo, oui, psl, scanner, tasks, usage
 from . import devices as D
 from . import settings_store as S
 from .auth import clear_cookies, is_local, issue, record_failure, require_auth, throttle
 from .config import DB_PATH, VERSION
 from .security import hash_password, verify_password
 from .state import STATUS
-from .timeutil import RANGES
+from .timeutil import RANGES, range_bounds
 
 public = APIRouter(prefix="/api")
 api = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
@@ -236,9 +236,11 @@ def dashboard():
     today = usage.summary("today")
     per_dev = {d["device_id"]: d for d in today["devices"]}
     online = [d for d in devs if d["is_online"]]
+    using = activity.in_use_now(now)
     online_out = []
-    for d in sorted(online, key=lambda x: -(per_dev.get(x["id"], {}).get("seconds", 0))):
+    for d in sorted(online, key=lambda x: (not using.get(x["id"]), -(per_dev.get(x["id"], {}).get("seconds", 0)))):
         s = D.serialize(d, now)
+        s["in_use"] = _in_use(d, using)
         s["paused"] = state[d["id"]]["paused"]
         s["today_seconds"] = per_dev.get(d["id"], {}).get("seconds", 0)
         s["top"] = per_dev.get(d["id"], {}).get("top", [])
@@ -247,6 +249,7 @@ def dashboard():
         "counts": {
             "total": len(devs),
             "online": len(online),
+            "in_use": sum(1 for d in online if using.get(d["id"])),
             "new_24h": sum(1 for d in devs if d["first_seen"] and now - d["first_seen"] < 86400),
             "paused": sum(1 for st in state.values() if st["paused"]),
             "unnamed_online": sum(1 for d in online if not d["name"]),
@@ -267,9 +270,11 @@ def list_devices():
     now = time.time()
     state = enforcer.device_block_state(now)
     per_dev = {d["device_id"]: d for d in usage.summary("today")["devices"]}
+    using = activity.in_use_now(now)
     out = []
     for d in db.q("SELECT * FROM devices ORDER BY is_online DESC, last_seen DESC"):
         s = D.serialize(d, now)
+        s["in_use"] = _in_use(d, using)
         st = state.get(d["id"], {})
         s["paused"] = st.get("paused", False)
         s["block_reasons"] = st.get("reasons", [])
@@ -277,6 +282,18 @@ def list_devices():
         s["top"] = per_dev.get(d["id"], {}).get("top", [])
         out.append(s)
     return {"devices": out, "types": D.DEVICE_TYPES}
+
+
+def _in_use(d: dict, using: dict) -> bool | None:
+    """True = someone is using it now, False = connected but idle/locked, None = can't tell
+    (offline, activity detection off, or the device doesn't use AdGuard so we can't see its activity)."""
+    if not d["is_online"] or not S.get("activity_detection") or not S.get("adguard_enabled"):
+        return None
+    if d["is_gateway"] or d["type"] in activity.NON_HUMAN_TYPES:
+        return None
+    if not d["last_dns"] or time.time() - d["last_dns"] > 3600:
+        return None
+    return bool(using.get(d["id"]))
 
 
 def _device_or_404(device_id: int) -> dict:
@@ -293,7 +310,7 @@ def get_device(device_id: int):
     s = D.serialize(d)
     recent = db.q1("SELECT COUNT(*) AS total, IFNULL(SUM(blocked),0) AS blocked FROM dns_queries "
                    "WHERE device_id=? AND ts>?", (device_id, time.time() - 900))
-    s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"))
+    s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"), in_use=_in_use(d, activity.in_use_now()))
     s.update(paused=st.get("paused", False), block_reasons=st.get("reasons", []),
              effective_blocked_services=sorted(st.get("services", [])),
              ips=enforcer.device_ips(device_id),
@@ -380,7 +397,12 @@ def put_controls(device_id: int, body: dict):
 @api.get("/devices/{device_id}/presence")
 def device_presence(device_id: int, range: str = "today"):
     _device_or_404(device_id)
-    return {"sessions": usage.presence_timeline(device_id, _range(range))}
+    r = _range(range)
+    lo, hi, _ = range_bounds(r)
+    in_use = activity.active_intervals(lo, hi, device_id).get(device_id, []) if S.get("activity_detection") else []
+    return {"sessions": usage.presence_timeline(device_id, r),
+            "in_use": [{"start": s, "end": e} for s, e in in_use],
+            "in_use_seconds": round(activity.total(in_use))}
 
 
 # ====================================================================== usage
@@ -389,14 +411,25 @@ def usage_summary(range: str = "today", device_id: int | None = None, include_sy
     return usage.summary(_range(range), device_id, include_system)
 
 
+@api.get("/usage/screentime")
+def usage_screentime(device_id: int | None = None, period: str = "week", date: str | None = None):
+    if period not in ("week", "day"):
+        raise HTTPException(400, "period must be week or day")
+    try:
+        return usage.screentime(device_id, period, date)
+    except ValueError:
+        raise HTTPException(400, "date must look like 2026-11-14")
+
+
 @api.get("/usage/sessions")
 def usage_sessions(range: str = "today", device_id: int | None = None):
     return {"sessions": usage.recent_sessions(_range(range), device_id)}
 
 
 @api.get("/usage/domains")
-def usage_domains(range: str = "today", device_id: int | None = None, unmapped: bool = False, limit: int = 100):
-    return {"domains": usage.top_domains(_range(range), device_id, unmapped, min(limit, 1000))}
+def usage_domains(range: str = "today", device_id: int | None = None, unmapped: bool = False, limit: int = 100,
+                  in_use: bool = False):
+    return {"domains": usage.top_domains(_range(range), device_id, unmapped, min(limit, 1000), in_use_only=in_use)}
 
 
 # ====================================================================== services catalog
@@ -416,26 +449,103 @@ def _clean_domains(domains: list[str]) -> list[str]:
     return out
 
 
-def _services_changed():
+def _services_changed(sid: int | None = None):
     usage.invalidate_matcher()
     usage.rematch_recent()
+    if sid:
+        usage.rebuild_sessions(sid)  # so the change also applies to earlier activity, not just new lookups
 
 
 @api.get("/services")
 def list_services():
     rows = db.q("SELECT * FROM services ORDER BY category, name")
     cats = sorted({r["category"] for r in rows})
-    return {"services": [{**r, "domains": db.jload(r["domains"], []), "track_time": bool(r["track_time"])} for r in rows],
-            "categories": cats}
+    since = time.time() - 7 * 86400
+    stats = {r["service_id"]: r for r in db.q(
+        "SELECT service_id, COUNT(*) AS lookups, COUNT(DISTINCT device_id) AS devices, MAX(ts) AS last_seen "
+        "FROM dns_queries WHERE ts>? AND service_id IS NOT NULL GROUP BY service_id", (since,))}
+    out = []
+    for r in rows:
+        st = stats.get(r["id"], {})
+        out.append({**r, "domains": db.jload(r["domains"], []), "track_time": bool(r["track_time"]),
+                    "reviewed": bool(r["reviewed"]), "hidden": bool(r["hidden"]), "source": r["source"] or "builtin",
+                    "lookups_7d": st.get("lookups", 0), "devices_7d": st.get("devices", 0), "last_seen": st.get("last_seen")})
+    return {"services": out, "categories": cats,
+            "review_count": sum(1 for s in out if s["source"] == "auto" and not s["reviewed"] and not s["hidden"]),
+            "adguard_synced": S.get("adguard_catalog_synced"), "psl_loaded": psl.loaded(),
+            "auto_detect": S.get("auto_detect_apps"),
+            "pending_sites": db.val("SELECT COUNT(*) FROM unknown_sites") or 0}
+
+
+class ReviewBody(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    background: bool | None = None
+
+
+@api.post("/services/{sid}/review")
+def review_service(sid: int, body: ReviewBody):
+    row = db.q1("SELECT * FROM services WHERE id=?", (sid,))
+    if not row:
+        raise HTTPException(404, "Not found")
+    name = (body.name or row["name"]).strip()
+    if name != row["name"] and db.q1("SELECT 1 FROM services WHERE lower(name)=lower(?) AND id!=?", (name, sid)):
+        raise HTTPException(409, "Another app already has that name. Use Merge instead.")
+    hidden = row["hidden"] if body.background is None else int(body.background)
+    track = 0 if hidden else (row["track_time"] if body.background is None else 1)
+    db.ex("UPDATE services SET name=?, category=?, hidden=?, track_time=?, reviewed=1 WHERE id=?",
+          (name, (body.category or row["category"]).strip(), hidden, track, sid))
+    return {"ok": True}
+
+
+@api.post("/services/review-all")
+def review_all():
+    db.ex("UPDATE services SET reviewed=1 WHERE source='auto' AND reviewed=0")
+    return {"ok": True}
+
+
+class MergeBody(BaseModel):
+    into: int
+
+
+@api.post("/services/{sid}/merge")
+def merge_service(sid: int, body: MergeBody):
+    try:
+        detect.merge(sid, body.into)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    usage.invalidate_matcher()
+    usage.rebuild_sessions(body.into)
+    return {"ok": True}
+
+
+@api.post("/services/sync-adguard")
+async def sync_adguard_apps():
+    if not S.get("adguard_enabled"):
+        raise HTTPException(400, "AdGuard Home isn't connected.")
+    try:
+        r = await detect.sync_adguard_catalog(force=True)
+    except adguard.AdGuardError as e:
+        raise HTTPException(502, str(e))
+    if r.get("changed_ids"):
+        await asyncio.to_thread(_after_sync, r["changed_ids"])
+    return {"added": r.get("added", 0), "updated": r.get("updated", 0)}
+
+
+def _after_sync(ids):
+    usage.invalidate_matcher()
+    usage.rematch_recent()
+    for sid in ids:
+        usage.rebuild_sessions(sid)
 
 
 @api.post("/services")
 def add_service(body: ServiceBody):
     if db.q1("SELECT id FROM services WHERE name=?", (body.name.strip(),)):
         raise HTTPException(409, "An app with that name already exists.")
-    db.ex("INSERT INTO services(name, category, domains, track_time) VALUES(?,?,?,?)",
-          (body.name.strip(), body.category.strip(), json.dumps(_clean_domains(body.domains)), int(body.track_time)))
-    _services_changed()
+    cur = db.ex("INSERT INTO services(name, category, domains, track_time, source, reviewed, created) VALUES(?,?,?,?,'user',1,?)",
+                (body.name.strip(), body.category.strip(), json.dumps(_clean_domains(body.domains)), int(body.track_time), time.time()))
+    _services_changed(cur.lastrowid)
     return list_services()
 
 
@@ -443,9 +553,12 @@ def add_service(body: ServiceBody):
 def update_service(sid: int, body: ServiceBody):
     if not db.q1("SELECT id FROM services WHERE id=?", (sid,)):
         raise HTTPException(404, "Not found")
-    db.ex("UPDATE services SET name=?, category=?, domains=?, track_time=? WHERE id=?",
-          (body.name.strip(), body.category.strip(), json.dumps(_clean_domains(body.domains)), int(body.track_time), sid))
-    _services_changed()
+    # Editing an auto-detected app makes it yours (and marks it reviewed).
+    db.ex("UPDATE services SET name=?, category=?, domains=?, track_time=?, hidden=CASE WHEN ?=1 THEN 0 ELSE hidden END, "
+          "reviewed=1, source=CASE WHEN source='auto' THEN 'user' ELSE source END WHERE id=?",
+          (body.name.strip(), body.category.strip(), json.dumps(_clean_domains(body.domains)), int(body.track_time),
+           int(body.track_time), sid))
+    _services_changed(sid)
     return list_services()
 
 
@@ -467,7 +580,7 @@ def add_domain(sid: int, body: DomainBody):
         raise HTTPException(404, "Not found")
     domains = _clean_domains(db.jload(row["domains"], []) + [body.domain])
     db.ex("UPDATE services SET domains=? WHERE id=?", (json.dumps(domains), sid))
-    _services_changed()
+    _services_changed(sid)
     return {"ok": True}
 
 
@@ -556,6 +669,84 @@ def delete_rule(rid: int):
     db.ex("DELETE FROM rules WHERE id=?", (rid,))
     tasks.kick("enforce")
     return list_rules()
+
+
+# ====================================================================== daily time limits
+class LimitBody(BaseModel):
+    device_ids: list[int]
+    target_type: str          # app | category
+    target: str               # service id or category name
+    minutes: int
+    days: list[int] = [0, 1, 2, 3, 4, 5, 6]
+    enabled: bool = True
+
+
+def _validate_limit(b: LimitBody):
+    if b.target_type not in ("app", "category"):
+        raise HTTPException(400, "Choose an app or a category")
+    if not b.device_ids:
+        raise HTTPException(400, "Choose at least one device.")
+    if not 1 <= b.minutes <= 24 * 60:
+        raise HTTPException(400, "The limit must be between 1 minute and 24 hours.")
+    if not b.days or any(d not in range(7) for d in b.days):
+        raise HTTPException(400, "Choose at least one day.")
+    if b.target_type == "app" and not db.q1("SELECT 1 FROM services WHERE id=?", (int(b.target),)):
+        raise HTTPException(400, "That app no longer exists.")
+
+
+@api.get("/limits")
+def list_limits(device_id: int | None = None):
+    return {"limits": enforcer.limits_usage(device_id), "adguard_enabled": S.get("adguard_enabled")}
+
+
+@api.post("/limits")
+def add_limit(body: LimitBody):
+    _validate_limit(body)
+    db.ex("INSERT INTO app_limits(device_ids, target_type, target, minutes, days, enabled, created) VALUES(?,?,?,?,?,?,?)",
+          (json.dumps(body.device_ids), body.target_type, body.target, body.minutes, json.dumps(sorted(set(body.days))),
+           int(body.enabled), time.time()))
+    tasks.kick("enforce")
+    return {"ok": True}
+
+
+@api.put("/limits/{lid}")
+def update_limit(lid: int, body: LimitBody):
+    _validate_limit(body)
+    db.ex("UPDATE app_limits SET device_ids=?, target_type=?, target=?, minutes=?, days=?, enabled=? WHERE id=?",
+          (json.dumps(body.device_ids), body.target_type, body.target, body.minutes, json.dumps(sorted(set(body.days))),
+           int(body.enabled), lid))
+    tasks.kick("enforce")
+    return {"ok": True}
+
+
+@api.delete("/limits/{lid}")
+def delete_limit(lid: int):
+    db.ex("DELETE FROM app_limits WHERE id=?", (lid,))
+    tasks.kick("enforce")
+    return {"ok": True}
+
+
+# ====================================================================== AdGuard global filter defaults
+_gf_cache: dict = {"ts": 0, "data": None}
+
+
+@api.get("/adguard/global-filters")
+async def adguard_global_filters():
+    """AdGuard's own (global) filter switches, used as each device's defaults."""
+    if not S.get("adguard_enabled"):
+        return {"available": False}
+    if _gf_cache["data"] and time.time() - _gf_cache["ts"] < 60:
+        return _gf_cache["data"]
+    try:
+        f, sb, pc, ss = await asyncio.gather(
+            adguard.request("GET", "/filtering/status"), adguard.request("GET", "/safebrowsing/status"),
+            adguard.request("GET", "/parental/status"), adguard.request("GET", "/safesearch/status"))
+    except adguard.AdGuardError as e:
+        return {"available": False, "error": str(e)}
+    data = {"available": True, "filtering": bool(f.get("enabled")), "safebrowsing": bool(sb.get("enabled")),
+            "parental": bool(pc.get("enabled")), "safe_search": bool(ss.get("enabled"))}
+    _gf_cache.update(ts=time.time(), data=data)
+    return data
 
 
 # ====================================================================== alerts

@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 
-from . import adguard, alerts, dhcp, enforcer, scanner, usage
+from . import adguard, alerts, detect, dhcp, enforcer, psl, scanner, usage
 from . import settings_store as S
 from .state import STATUS
 
@@ -49,6 +49,13 @@ async def sync_loop():
                 STATUS["adguard"].update(ok=True, error=None, version=st.get("version"))
                 await usage.sync_loop_once()
                 STATUS["adguard"]["last_sync"] = time.time()
+                try:
+                    n = await usage.backfill_block_sources()
+                    if n:
+                        log.info("labelled %s earlier blocked lookups with their reason", n)
+                except Exception as e:
+                    log.warning("block-reason backfill failed: %s", e)
+                await catalog_maintenance()
                 if was_ok is False:
                     alerts.add("adguard_up", "AdGuard Home is reachable again", level="success")
             except Exception as e:
@@ -65,6 +72,38 @@ async def sync_loop():
                 log.warning("cleanup failed: %s", e)
             last_cleanup = time.time()
         await _sleep("sync", S.get("adguard_poll_sec"))
+
+
+async def catalog_maintenance() -> None:
+    """Keeps automatic app detection fed: domain-ending list, AdGuard's app list, one-off backfill."""
+    try:
+        if not psl.loaded():
+            await asyncio.to_thread(psl.load_from_disk)
+        if psl.needs_refresh():
+            n = await psl.refresh()
+            log.info("downloaded %s domain-ending rules", n)
+    except Exception as e:
+        log.warning("domain-ending list refresh failed (using built-in fallback): %s", e)
+    if S.get("adguard_catalog_sync"):
+        try:
+            r = await detect.sync_adguard_catalog()
+            if r.get("changed_ids"):
+                usage.invalidate_matcher()
+                usage.rematch_recent()
+                for sid in r["changed_ids"]:
+                    usage.rebuild_sessions(sid)
+                log.info("AdGuard app list: %s added, %s updated", r["added"], r["updated"])
+        except Exception as e:
+            log.warning("AdGuard app list sync failed: %s", e)
+    if S.get("auto_detect_apps") and not S.get("auto_detect_backfilled") and psl.loaded():
+        try:
+            n = await asyncio.to_thread(detect.backfill_unknown)
+            new_ids = await asyncio.to_thread(detect.promote_ready)
+            await asyncio.to_thread(usage.apply_new_apps, new_ids)
+            S.set("auto_detect_backfilled", True)
+            log.info("auto-detect backfill: scanned %s lookups, created %s apps", n, len(new_ids))
+        except Exception as e:
+            log.warning("auto-detect backfill failed: %s", e)
 
 
 async def enforce_loop():

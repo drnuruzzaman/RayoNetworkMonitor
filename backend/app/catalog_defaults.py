@@ -1,6 +1,10 @@
 """Starter catalog of apps and services, loaded into the database on first run only.
 After that you can edit, add or delete every entry from the 'Apps & categories' screen."""
 
+# Apps added after the first release, by catalog version. Existing installs get these once,
+# without re-adding anything the user deleted from the original list.
+CATALOG_VERSION = 3
+
 DEFAULT_SERVICES = [
     # name, category, domains, track_time
     ("YouTube", "Video", ["youtube.com", "googlevideo.com", "ytimg.com", "youtu.be", "youtube-nocookie.com", "youtubei.googleapis.com", "yt3.ggpht.com"], 1),
@@ -54,9 +58,49 @@ DEFAULT_SERVICES = [
     ("eBay", "Shopping", ["ebay.com.au", "ebay.com", "ebaystatic.com"], 1),
     ("Temu", "Shopping", ["temu.com", "kwcdn.com"], 1),
     ("Shein", "Shopping", ["shein.com", "ltwebstatic.com"], 1),
+    ("Westpac", "Finance", ["westpac.com.au"], 1),
+    ("CommBank", "Finance", ["commbank.com.au", "commsec.com.au"], 1),
+    ("ANZ", "Finance", ["anz.com", "anz.com.au", "anz.co.nz"], 1),
+    ("NAB", "Finance", ["nab.com.au"], 1),
+    ("ING", "Finance", ["ing.com.au"], 1),
+    ("St.George / BankSA / Bank of Melbourne", "Finance", ["stgeorge.com.au", "banksa.com.au", "bankofmelbourne.com.au"], 1),
+    ("Macquarie", "Finance", ["macquarie.com.au"], 1),
+    ("Bendigo Bank", "Finance", ["bendigobank.com.au"], 1),
+    ("Up Bank", "Finance", ["up.com.au"], 1),
+    ("PayPal", "Finance", ["paypal.com", "paypalobjects.com"], 1),
+    ("myGov", "Finance", ["my.gov.au", "ato.gov.au", "servicesaustralia.gov.au"], 1),
+    # ---- v3: kids, learning and family apps
+    ("YouTube Kids", "Kids", ["youtubekids.com"], 1),
+    ("PBS Kids", "Kids", ["pbskids.org"], 1),
+    ("Kidoodle.TV", "Kids", ["kidoodle.tv"], 1),
+    ("Nick Jr.", "Kids", ["nickjr.com"], 1),
+    ("ABCya", "Kids", ["abcya.com"], 1),
+    ("Toca Boca", "Kids", ["tocaboca.com"], 1),
+    ("LEGO", "Kids", ["lego.com"], 1),
+    ("Epic! books", "Kids", ["getepic.com"], 1),
+    ("Reading Eggs", "Kids", ["readingeggs.com", "readingeggs.com.au"], 1),
+    ("Mathseeds", "Kids", ["mathseeds.com"], 1),
+    ("Prodigy Math", "Kids", ["prodigygame.com"], 1),
+    ("Scratch", "Kids", ["scratch.mit.edu"], 1),
+    ("Kahoot!", "Education", ["kahoot.it", "kahoot.com"], 1),
+    ("Blooket", "Education", ["blooket.com"], 1),
+    ("Gimkit", "Education", ["gimkit.com"], 1),
+    ("Seesaw", "Education", ["seesaw.me"], 1),
+    ("ClassDojo", "Education", ["classdojo.com"], 1),
+    ("Studyladder", "Education", ["studyladder.com.au"], 1),
+    ("Pokémon GO", "Gaming", ["nianticlabs.com", "pokemon.com"], 1),
+    ("Among Us", "Gaming", ["innersloth.com"], 1),
     # Background traffic: shown in reports, not counted as screen time.
     ("Apple system", "System", ["apple.com", "icloud.com", "mzstatic.com", "apple-dns.net", "aaplimg.com", "cdn-apple.com", "icloud-content.com"], 0),
     ("Google system", "System", ["googleapis.com", "gstatic.com", "google.com", "android.com", "gvt1.com", "gvt2.com", "googleusercontent.com"], 0),
     ("Microsoft system", "System", ["microsoft.com", "windows.com", "windowsupdate.com", "msftconnecttest.com", "live.com", "msn.com", "azureedge.net"], 0),
     ("Samsung system", "System", ["samsung.com", "samsungcloud.com", "samsungapps.com", "samsungosp.com"], 0),
 ]
+
+_FINANCE = {"Westpac", "CommBank", "ANZ", "NAB", "ING", "St.George / BankSA / Bank of Melbourne", "Macquarie",
+            "Bendigo Bank", "Up Bank", "PayPal", "myGov"}
+_V3 = {"YouTube Kids", "PBS Kids", "Kidoodle.TV", "Nick Jr.", "ABCya", "Toca Boca", "LEGO", "Epic! books",
+       "Reading Eggs", "Mathseeds", "Prodigy Math", "Scratch", "Kahoot!", "Blooket", "Gimkit", "Seesaw",
+       "ClassDojo", "Studyladder", "Pokémon GO", "Among Us"}
+# App names introduced in each catalog version.
+CATALOG_ADDED_IN = {2: _FINANCE, 3: _V3}

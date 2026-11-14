@@ -84,21 +84,28 @@ const BADGE = {
   green: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 dark:bg-emerald-950/50 dark:text-emerald-300',
   red: 'bg-red-50 text-red-700 ring-red-600/20 dark:bg-red-950/50 dark:text-red-300',
   amber: 'bg-amber-50 text-amber-800 ring-amber-600/20 dark:bg-amber-950/50 dark:text-amber-300',
+  orange: 'bg-orange-50 text-orange-700 ring-orange-600/20 dark:bg-orange-950/50 dark:text-orange-300',
   blue: 'bg-brand-50 text-brand-700 ring-brand-600/20 dark:bg-brand-950/60 dark:text-brand-300',
   violet: 'bg-violet-50 text-violet-700 dark:bg-violet-950/50 dark:text-violet-300',
 }
 export function Badge({ color = 'gray', children, dot, className }) {
   return (
     <span className={cx('inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium', BADGE[color], className)}>
-      {dot && <span className={cx('h-1.5 w-1.5 rounded-full', { green: 'bg-emerald-500', red: 'bg-red-500', amber: 'bg-amber-500', gray: 'bg-slate-400', blue: 'bg-brand-500', violet: 'bg-violet-500' }[color])} />}
+      {dot && <span className={cx('h-1.5 w-1.5 rounded-full', { green: 'bg-emerald-500', red: 'bg-red-500', amber: 'bg-amber-500', orange: 'bg-orange-500', gray: 'bg-slate-400', blue: 'bg-brand-500', violet: 'bg-violet-500' }[color])} />}
       {children}
     </span>
   )
 }
 
-export function StatusDot({ online, paused }) {
+/** inUse: true = someone is using it now, false = connected but idle/locked, undefined/null = can't tell. */
+export function StatusDot({ online, paused, inUse }) {
   if (paused) return <Badge color="red" dot>Paused</Badge>
-  return online ? <Badge color="green" dot>Online</Badge> : <Badge color="gray" dot>Offline</Badge>
+  if (!online) return <Badge color="gray" dot>Offline</Badge>
+  if (inUse === true) return <Badge color="green" dot>In use</Badge>
+  if (inUse === false) {
+    return <span title="Connected to Wi-Fi, but only background traffic (e.g. screen locked)"><Badge color="orange" dot>Idle</Badge></span>
+  }
+  return <Badge color="green" dot>Online</Badge>
 }
 
 // ------------------------------------------------------------------ Form controls

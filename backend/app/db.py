@@ -143,8 +143,47 @@ def conn() -> sqlite3.Connection:
     return c
 
 
+MIGRATIONS = [
+    ("dns_queries", "block_source", "TEXT"),   # pause | app | filter | adult | malware | custom | other
+    ("dns_queries", "block_detail", "TEXT"),   # e.g. filter list name or blocked app
+    ("services", "source", "TEXT"),            # builtin | adguard | auto | user
+    ("services", "reviewed", "INTEGER DEFAULT 1"),
+    ("services", "hidden", "INTEGER DEFAULT 0"),  # 'background': matched but never screen time
+    ("services", "created", "REAL"),
+    ("services", "adguard_id", "TEXT"),
+    ("services", "registrable", "TEXT"),       # for auto apps: the site they were built from, e.g. westpac.com.au
+]
+
+EXTRA_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_limits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_ids  TEXT NOT NULL,
+    target_type TEXT NOT NULL,      -- app | category
+    target      TEXT NOT NULL,      -- service id (as text) or category name
+    minutes     INTEGER NOT NULL,
+    days        TEXT NOT NULL,
+    enabled     INTEGER DEFAULT 1,
+    created     REAL
+);
+CREATE TABLE IF NOT EXISTS unknown_sites (
+    registrable TEXT PRIMARY KEY,
+    lookups     INTEGER DEFAULT 0,
+    first_seen  REAL,
+    last_seen   REAL,
+    sample      TEXT
+);
+"""
+
+
 def init():
-    conn().executescript(SCHEMA)
+    c = conn()
+    c.executescript(SCHEMA)
+    for table, col, typ in MIGRATIONS:
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+        if col not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+    c.executescript(EXTRA_SCHEMA)
+    c.execute("UPDATE services SET source='builtin', reviewed=1 WHERE source IS NULL")
 
 
 def q(sql: str, params=()) -> list[dict]:
