@@ -1,0 +1,272 @@
+import { useEffect, useState } from 'react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Activity as ActivityIcon, ArrowLeft, CalendarClock, Globe, LayoutGrid, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { api, useApi } from '../api'
+import { PresenceStrip, UsageTimeline } from '../components/Charts'
+import DeviceIcon, { TYPE_LABELS } from '../components/DeviceIcon'
+import EditDeviceModal from '../components/EditDeviceModal'
+import PauseButton from '../components/PauseButton'
+import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
+import { AssignDomainModal, ServicePicker } from '../components/Pickers'
+import {
+  Badge, BarList, Button, Callout, Card, ConfirmModal, EmptyState, ErrorState, Loading, Segmented, StatusDot, Tabs, Toggle, useToast,
+} from '../components/ui'
+import { DAYS, RANGE_OPTIONS, categoryColor, clock, dateTime, duration, number, timeAgo } from '../lib/format'
+import { RuleModal } from './Schedules'
+
+function Info({ label, children, mono }) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 py-2">
+      <dt className="shrink-0 text-xs text-slate-500">{label}</dt>
+      <dd className={`min-w-0 break-all text-right text-sm ${mono ? 'font-mono text-xs' : ''}`}>{children || '—'}</dd>
+    </div>
+  )
+}
+
+function OverviewTab({ device }) {
+  const { data: pres } = useApi(`/devices/${device.id}/presence?range=today`)
+  const { data: usage } = useApi(`/usage/summary?range=today&device_id=${device.id}`)
+  const start = new Date(); start.setHours(0, 0, 0, 0)
+  const s = start.getTime() / 1000
+  const onlineSec = (pres?.sessions || []).reduce((a, x) => a + (x.end - x.start), 0)
+  return (
+    <div className="grid gap-6 lg:grid-cols-3">
+      <div className="space-y-6 lg:col-span-2">
+        <Card title="Connected today" subtitle={pres ? `Online for ${duration(onlineSec)} so far` : ''}>
+          <PresenceStrip sessions={pres?.sessions || []} start={s} end={s + 86400} />
+        </Card>
+        <Card title="App activity today" subtitle={usage ? `${duration(usage.total_seconds)} estimated screen time` : ''}>
+          <UsageTimeline data={usage?.timeline || []} height={200} />
+        </Card>
+      </div>
+      <div className="space-y-6">
+        <Card title="Top apps today">
+          {usage?.services?.length ? (
+            <BarList items={usage.services.slice(0, 8).map((x) => ({ key: x.service_id, label: x.service, value: x.seconds, category: x.category }))}
+              format={duration} colorFor={(i) => categoryColor(i.category)} />
+          ) : <p className="text-sm text-slate-500">No app activity recorded today.</p>}
+        </Card>
+        <Card title="Details">
+          <dl className="-my-2 divide-y divide-slate-100 dark:divide-slate-800">
+            <Info label="IP address" mono>{device.ip}</Info>
+            <Info label="MAC address" mono>{device.mac}</Info>
+            <Info label="Maker">{device.vendor || (device.is_private_mac ? 'Hidden (private address)' : null)}</Info>
+            <Info label="Reported name">{device.hostname}</Info>
+            <Info label="First seen">{dateTime(device.first_seen)}</Info>
+            <Info label="Last seen">{timeAgo(device.last_seen)}</Info>
+            <Info label="Last internet activity">{timeAgo(device.last_dns)}</Info>
+            <Info label="Type">{TYPE_LABELS[device.type]}</Info>
+          </dl>
+          {device.notes && <p className="mt-4 rounded-lg bg-slate-50 p-3 text-sm dark:bg-slate-800/50">{device.notes}</p>}
+        </Card>
+      </div>
+    </div>
+  )
+}
+
+function ActivityTab({ device }) {
+  const [range, setRange] = useState('today')
+  const [assign, setAssign] = useState(null)
+  const sessions = useApi(`/usage/sessions?range=${range}&device_id=${device.id}`)
+  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60`)
+  return (
+    <div className="space-y-6">
+      <Segmented value={range} onChange={setRange} options={RANGE_OPTIONS} />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card title="Sessions" subtitle="When each app was in use (estimated)" bodyClass="max-h-[32rem] overflow-y-auto">
+          {!sessions.data?.sessions?.length ? <EmptyState icon={ActivityIcon} title="No sessions" /> : (
+            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+              {sessions.data.sessions.map((x) => (
+                <li key={x.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: categoryColor(x.category) }} />
+                  <span className="flex-1 font-medium">{x.service}</span>
+                  <span className="text-xs text-slate-500">{range === 'today' || range === 'yesterday' ? '' : new Date(x.start * 1000).toLocaleDateString([], { weekday: 'short' }) + ' '}{clock(x.start)}–{clock(x.end)}</span>
+                  <span className="w-16 text-right tabular-nums text-slate-600 dark:text-slate-300">{duration(x.seconds)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+        <Card title="Websites & services" subtitle="Most looked-up addresses. Assign unknown ones to an app." bodyClass="max-h-[32rem] overflow-y-auto">
+          {!domains.data?.domains?.length ? <EmptyState icon={Globe} title="No lookups" description="Activity appears once this device uses AdGuard Home for DNS." /> : (
+            <table className="min-w-full text-sm">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {domains.data.domains.map((x) => (
+                  <tr key={x.domain}>
+                    <td className="px-5 py-2"><p className="max-w-[16rem] truncate font-mono text-xs" title={x.domain}>{x.domain}</p></td>
+                    <td className="px-2 py-2">{x.service ? <Badge color="blue">{x.service}</Badge> : <button className="link text-xs" onClick={() => setAssign(x.domain)}>Assign…</button>}</td>
+                    <td className="px-2 py-2 text-right tabular-nums text-slate-500">{number(x.queries)}{x.blocked ? <span className="ml-1 text-red-500">({x.blocked} blocked)</span> : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Card>
+      </div>
+      {assign && <AssignDomainModal domain={assign} onClose={() => setAssign(null)} onDone={() => { domains.reload(); sessions.reload() }} />}
+    </div>
+  )
+}
+
+function ControlsTab({ device, reload }) {
+  const toast = useToast()
+  const [c, setC] = useState(device.controls)
+  const [busy, setBusy] = useState(false)
+  // Only reset the form when the saved controls actually change, so auto-refresh doesn't wipe unsaved edits.
+  const saved = JSON.stringify(device.controls)
+  useEffect(() => setC(JSON.parse(saved)), [saved])
+  const dirty = JSON.stringify(c) !== JSON.stringify(device.controls)
+  const set = (k) => (v) => setC((x) => ({ ...x, [k]: v }))
+  const save = async () => {
+    setBusy(true)
+    try { await api(`/devices/${device.id}/controls`, { method: 'PUT', body: c }); toast('Controls saved'); reload() } catch (e) { toast(e.message, 'error') } finally { setBusy(false) }
+  }
+  return (
+    <div className="space-y-6">
+      {device.is_self && <Callout tone="info">This is the PC running HomeNet. You can still set filters, but you can't pause it.</Callout>}
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card title="Always block these apps" subtitle="Blocked all day. For time-based blocking, use a schedule." className="lg:col-span-2">
+          <ServicePicker value={c.blocked_services} onChange={set('blocked_services')} />
+        </Card>
+        <Card title="Filtering">
+          <div className="space-y-5">
+            <Toggle checked={c.use_global} onChange={set('use_global')} label="Use AdGuard's default filters" description="Turn off to choose filters just for this device." />
+            <div className={c.use_global ? 'pointer-events-none space-y-5 opacity-50' : 'space-y-5'}>
+              <Toggle checked={c.filtering} onChange={set('filtering')} label="Block ads & trackers" />
+              <Toggle checked={c.safebrowsing} onChange={set('safebrowsing')} label="Block malware & phishing" />
+              <Toggle checked={c.parental} onChange={set('parental')} label="Block adult websites" />
+              <Toggle checked={c.safe_search} onChange={set('safe_search')} label="Force safe search" description="Google, Bing, YouTube and others." />
+            </div>
+            {!c.use_global && !c.filtering && <Callout tone="warning">With filtering off, pausing this device won't work.</Callout>}
+          </div>
+        </Card>
+      </div>
+      <div className="flex justify-end gap-2">
+        <Button variant="secondary" disabled={!dirty} onClick={() => setC(device.controls)}>Discard</Button>
+        <Button disabled={!dirty} loading={busy} onClick={save}>Save controls</Button>
+      </div>
+    </div>
+  )
+}
+
+function SchedulesTab({ device, reload }) {
+  const [editing, setEditing] = useState(null)
+  return (
+    <Card title="Schedules for this device" actions={<Button size="sm" icon={Plus} onClick={() => setEditing({ device_ids: [device.id] })}>Add schedule</Button>} bodyClass="">
+      {!device.rules.length ? <EmptyState icon={CalendarClock} title="No schedules" description="Set bedtime or homework hours to pause internet or block apps automatically." /> : (
+        <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+          {device.rules.map((r) => (
+            <li key={r.id} className="flex items-center gap-4 px-5 py-3">
+              <div className="flex-1">
+                <p className="flex items-center gap-2 text-sm font-medium">{r.name}{r.active && <Badge color="red" dot>Active now</Badge>}{!r.enabled && <Badge>Off</Badge>}</p>
+                <p className="text-xs text-slate-500">{r.action === 'pause_internet' ? 'Pause internet' : `Block ${r.services.length} app${r.services.length === 1 ? '' : 's'}`} · {r.start}–{r.end} · {r.days.map((d) => DAYS[d]).join(', ')}</p>
+              </div>
+              <Button size="sm" variant="ghost" icon={Pencil} onClick={() => setEditing(r)}>Edit</Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {editing && <RuleModal rule={editing} onClose={() => setEditing(null)} onSaved={reload} />}
+    </Card>
+  )
+}
+
+/** Tells the parent whether a pause is actually working for this device, and why it might not be. */
+function PauseHealth({ device }) {
+  if (device.is_self) return null
+  const r = device.recent_lookups || { total: 0, blocked: 0 }
+  const usesAdGuard = device.last_dns && Date.now() / 1000 - device.last_dns < 3600
+  if (!device.paused) {
+    if (device.adguard_enabled && device.is_online && !usesAdGuard) {
+      return (
+        <Callout tone="warning" className="mb-6" title="Pausing won't work for this device yet">
+          It hasn't sent any lookups to AdGuard Home in the last hour, so HomeNet can't see or block its activity.
+          Point it at this PC for DNS (see <Link className="link" to="/dhcp">Address server</Link> or the <Link className="link" to="/settings/guide">setup guide</Link>).
+        </Callout>
+      )
+    }
+    return null
+  }
+  if (!device.adguard_enabled) {
+    return <Callout tone="warning" className="mb-6" title="Pause is waiting for AdGuard Home">Connect AdGuard Home in Settings so the pause can take effect.</Callout>
+  }
+  if (!usesAdGuard) {
+    return (
+      <Callout tone="error" className="mb-6" title="This pause can't take effect">
+        The device isn't sending lookups to AdGuard Home, so there's nothing to block. It may use the modem, a VPN or iCloud Private Relay for DNS.
+        Point it at this PC for DNS (see <Link className="link" to="/dhcp">Address server</Link>).
+      </Callout>
+    )
+  }
+  return (
+    <Callout tone="info" className="mb-6" title={r.blocked ? `Pause is working: ${r.blocked} of ${r.total} lookups blocked in the last 15 minutes` : 'Pause is active'}>
+      New connections are blocked straight away. Apps that were <b>already connected</b> (video, WhatsApp, games) can keep working for a few minutes until they reconnect.
+      To cut them off now, turn the device's Wi-Fi off and on, or close the apps.
+      {r.total > r.blocked && r.blocked > 0 && <> Some lookups still got through: check iCloud Private Relay or VPN apps on the device.</>}
+    </Callout>
+  )
+}
+
+export default function DeviceDetail() {
+  const { id } = useParams()
+  const refresh = useAutoRefresh('device', 60000)
+  return <RefreshScope state={refresh}><DeviceView id={id} refresh={refresh} /></RefreshScope>
+}
+
+function DeviceView({ id, refresh }) {
+  const nav = useNavigate()
+  const toast = useToast()
+  const { data: device, error, loading, reload } = useApi(`/devices/${id}`)
+  const [tab, setTab] = useState('overview')
+  const [edit, setEdit] = useState(false)
+  const [del, setDel] = useState(false)
+
+  if (loading && !device) return <Loading />
+  if (error && !device) return <ErrorState error={error} onRetry={reload} />
+
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between gap-4">
+        <Link to="/devices" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"><ArrowLeft className="h-4 w-4" />All devices</Link>
+        <RefreshControl state={refresh} />
+      </div>
+      <div className="card mb-6 flex flex-col gap-5 p-5 sm:flex-row sm:items-center">
+        <DeviceIcon type={device.type} online={device.is_online} paused={device.paused} size="lg" />
+        <div className="min-w-0 flex-1">
+          <h1 className="flex flex-wrap items-center gap-2 text-xl font-semibold">{device.display_name}
+            {device.is_self && <Badge color="blue">This PC</Badge>}{device.is_gateway && <Badge color="violet">Router</Badge>}
+          </h1>
+          <p className="mt-1 text-sm text-slate-500">{[device.owner && `Belongs to ${device.owner}`, TYPE_LABELS[device.type], device.ip].filter(Boolean).join(' · ')}</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <StatusDot online={device.is_online} paused={device.paused} />
+            {device.block_reasons.map((r) => <Badge key={r} color="red">{r}</Badge>)}
+            {device.is_private_mac && <Badge color="amber" title="This device uses a private/random MAC address">Private address</Badge>}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <PauseButton device={device} onChange={reload} size="md" />
+          <Button variant="secondary" icon={Pencil} onClick={() => setEdit(true)}>Edit</Button>
+          <Button variant="danger-soft" icon={Trash2} onClick={() => setDel(true)} aria-label="Forget device" />
+        </div>
+      </div>
+
+      <PauseHealth device={device} />
+
+      <Tabs value={tab} onChange={setTab} tabs={[
+        { value: 'overview', label: 'Overview', icon: LayoutGrid },
+        { value: 'activity', label: 'Activity', icon: ActivityIcon },
+        { value: 'controls', label: 'Controls', icon: ShieldCheck },
+        { value: 'schedules', label: 'Schedules', icon: CalendarClock, count: device.rules.length },
+      ]} />
+      {tab === 'overview' && <OverviewTab device={device} />}
+      {tab === 'activity' && <ActivityTab device={device} />}
+      {tab === 'controls' && <ControlsTab device={device} reload={reload} />}
+      {tab === 'schedules' && <SchedulesTab device={device} reload={reload} />}
+
+      <EditDeviceModal device={device} open={edit} onClose={() => setEdit(false)} onSaved={reload} />
+      <ConfirmModal open={del} onClose={() => setDel(false)} danger confirmLabel="Forget device" title="Forget this device?"
+        message="Its history and controls will be deleted. If it connects again it will show up as a new device."
+        onConfirm={async () => { await api(`/devices/${id}`, { method: 'DELETE' }); toast('Device removed'); nav('/devices') }} />
+    </>
+  )
+}

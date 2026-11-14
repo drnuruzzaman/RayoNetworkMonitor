@@ -1,0 +1,9 @@
+Address server (DHCP)
+	1. Give this PC a fixed IP address
+		192.168.1.10
+	2. Enable Windows Firewall
+		powershell -ExecutionPolicy Bypass -File .\scripts\allow-dhcp-firewall.ps1
+	3. 
+
+
+
