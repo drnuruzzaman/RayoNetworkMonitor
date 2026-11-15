@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Activity as ActivityIcon, ArrowLeft, CalendarClock, Globe, LayoutGrid, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-react'
+import { Activity as ActivityIcon, ArrowLeft, CalendarClock, Globe, LayoutGrid, Pencil, Plus, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { api, useApi } from '../api'
 import { PresenceStrip, UsageTimeline } from '../components/Charts'
 import DeviceIcon, { TYPE_LABELS } from '../components/DeviceIcon'
@@ -18,6 +18,13 @@ import {
 } from '../components/ui'
 import { DAYS, RANGE_OPTIONS, categoryColor, clock, dateTime, duration, number, timeAgo } from '../lib/format'
 import { dayDiff } from '../lib/servertime'
+
+/** Delay a fast-changing value (e.g. a search box) so we don't refetch on every keystroke. */
+function useDebounced(value, ms) {
+  const [v, setV] = useState(value)
+  useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t) }, [value, ms])
+  return v
+}
 import { RuleModal } from './Schedules'
 
 function Info({ label, children, mono }) {
@@ -81,7 +88,13 @@ function ActivityTab({ device }) {
   const [openApp, setOpenApp] = useState(null)
   const sessions = useApi(`/usage/sessions?range=${range}&device_id=${device.id}`)
   const [showBackground, setShowBackground] = useState(false)
-  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60&in_use=${!showBackground}&sort=recent`)
+  const [search, setSearch] = useState('')
+  const [blockedFilter, setBlockedFilter] = useState('all')
+  const [limit, setLimit] = useState(60)
+  const q = useDebounced(search, 300)
+  useEffect(() => { setLimit(60) }, [range, showBackground, q, blockedFilter])
+  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=${limit}&in_use=${!showBackground}&sort=recent&search=${encodeURIComponent(q)}&blocked=${blockedFilter}`)
+  const rows = domains.data?.domains || []
   return (
     <div className="space-y-6">
       <Segmented value={range} onChange={setRange} options={RANGE_OPTIONS} />
@@ -102,16 +115,24 @@ function ActivityTab({ device }) {
             </ul>
           )}
         </Card>
-        <Card title="Websites & services" bodyClass="max-h-[32rem] overflow-y-auto"
+        <Card title="Websites & services" bodyClass=""
           subtitle={showBackground ? 'Everything looked up, including background traffic while idle or locked.' : 'What was used while someone was actually using the device.'}
           actions={<label className="flex items-center gap-2 whitespace-nowrap text-xs text-slate-500"><Toggle checked={showBackground} onChange={setShowBackground} />Show background</label>}>
-          {!domains.data?.domains?.length ? (
-            <EmptyState icon={Globe} title={showBackground ? 'No lookups' : 'Not used in this period'}
-              description={showBackground ? 'Activity appears once this device uses AdGuard Home for DNS.' : 'There was only background traffic (e.g. screen locked). Turn on "Show background" to see it.'} />
+          <div className="flex flex-col gap-3 px-5 pb-3 sm:flex-row sm:items-center">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+              <input className="input pl-9" placeholder="Search address or app…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <Segmented value={blockedFilter} onChange={setBlockedFilter} options={[{ value: 'all', label: 'All' }, { value: 'allowed', label: 'Allowed' }, { value: 'blocked', label: 'Blocked' }]} />
+          </div>
+          <div className="max-h-[32rem] overflow-y-auto">
+          {!rows.length ? (
+            <EmptyState icon={Globe} title={q || blockedFilter !== 'all' ? 'No matches' : showBackground ? 'No lookups' : 'Not used in this period'}
+              description={q || blockedFilter !== 'all' ? 'Try a different search or filter.' : showBackground ? 'Activity appears once this device uses AdGuard Home for DNS.' : 'There was only background traffic (e.g. screen locked). Turn on "Show background" to see it.'} />
           ) : (
             <table className="min-w-full text-sm">
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {domains.data.domains.slice().sort((a, b) => (b.last || 0) - (a.last || 0)).map((x) => (
+                {rows.map((x) => (
                   <tr key={x.domain}>
                     <td className="px-5 py-2 align-top">
                       <p className="max-w-[16rem] truncate font-mono text-xs" title={x.domain}>{x.domain}</p>
@@ -127,6 +148,10 @@ function ActivityTab({ device }) {
               </tbody>
             </table>
           )}
+          {rows.length >= limit && (
+            <div className="px-5 py-3"><Button size="sm" variant="secondary" onClick={() => setLimit((n) => n + 120)}>Load more</Button></div>
+          )}
+          </div>
         </Card>
       </div>
       {assign && <AssignDomainModal domain={assign} onClose={() => setAssign(null)} onDone={() => { domains.reload(); sessions.reload() }} />}

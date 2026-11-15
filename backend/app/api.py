@@ -548,9 +548,10 @@ def usage_sessions(range: str = "today", device_id: int | None = None):
 
 @api.get("/usage/domains")
 def usage_domains(range: str = "today", device_id: int | None = None, unmapped: bool = False, limit: int = 100,
-                  in_use: bool = False, sort: str = "lookups"):
-    return {"domains": usage.top_domains(_range(range), device_id, unmapped, min(limit, 1000), in_use_only=in_use,
-                                         recent_first=(sort == "recent"))}
+                  in_use: bool = False, sort: str = "lookups", search: str = "", blocked: str = "all"):
+    return {"domains": usage.top_domains(_range(range), device_id, unmapped, min(limit, 2000), in_use_only=in_use,
+                                         recent_first=(sort == "recent"), search=search.strip(),
+                                         blocked=blocked if blocked in ("blocked", "allowed") else "all")}
 
 
 # ====================================================================== services catalog

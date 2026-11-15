@@ -39,10 +39,10 @@ def _background_service_ids() -> set[int]:
     return {r["id"] for r in db.q("SELECT id FROM services WHERE track_time=0 OR hidden=1 OR category='System'")}
 
 
-# One app's own content network: only loads while someone scrolls or watches that app, so for "in use" it is
-# real activity (detect still treats them as infrastructure so they never become apps of their own).
-# Not whatsapp.net: WhatsApp downloads media in the background as messages arrive.
-APP_CONTENT_CDNS = {"fbcdn.net", "cdninstagram.com", "ggpht.com", "nflxso.net"}
+# One app's own content network: loads while someone uses that app, so for "in use" it is real activity
+# (detect still treats them as infrastructure so they never become apps of their own). whatsapp.net is WhatsApp's
+# own domain, not a shared CDN, so it counts too; constant background keep-alives are caught per device by learning.
+APP_CONTENT_CDNS = {"fbcdn.net", "cdninstagram.com", "ggpht.com", "nflxso.net", "whatsapp.net"}
 
 
 def _is_infra(domain: str) -> bool:
