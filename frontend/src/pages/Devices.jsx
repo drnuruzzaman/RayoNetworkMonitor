@@ -4,6 +4,7 @@ import { ChevronDown, ChevronUp, ChevronsUpDown, MoreHorizontal, Pencil, Radar, 
 import { api, useApi } from '../api'
 import DeviceIcon, { TYPE_LABELS } from '../components/DeviceIcon'
 import EditDeviceModal from '../components/EditDeviceModal'
+import { LastUsedCell, UsingCell } from '../components/LiveNow'
 import PauseButton from '../components/PauseButton'
 import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
 import { Badge, Button, Card, CopyButton, EmptyState, ErrorState, Loading, Menu, PageHeader, Segmented, Select, StatusDot, cx, useToast } from '../components/ui'
@@ -16,11 +17,13 @@ const statusRank = (d) => (d.paused ? 1 : !d.is_online ? 0 : d.in_use === true ?
 const SORTS = {
   device: (d) => (d.display_name || '').toLowerCase(),
   status: statusRank,
+  // In use first (newest app first), then idle devices by when they were last used.
+  using: (d) => (d._live ? 1e12 + (d._live.apps?.[0]?.since ?? d._live.in_use_since) : d._last?.at ?? null),
   address: (d) => ipNum(d.ip),
   today: (d) => d.today_seconds || 0,
 }
 // First click on a column: names and addresses A→Z, status and time "most first".
-const FIRST_DIR = { device: 'asc', status: 'desc', address: 'asc', today: 'desc' }
+const FIRST_DIR = { device: 'asc', status: 'desc', using: 'desc', address: 'asc', today: 'desc' }
 const SORT_STORE = 'homenet.devices.sort'
 
 function loadSort() {
@@ -68,7 +71,11 @@ function DevicesView({ refresh }) {
     return next
   })
 
-  const devices = data?.devices || []
+  // Who is using what right now (same data as the device page's "Using … since" line); follows the page refresh.
+  const liveData = useApi('/live').data
+  const liveById = useMemo(() => Object.fromEntries((liveData?.in_use || []).map((l) => [l.id, l])), [liveData])
+  const devices = useMemo(() => (data?.devices || []).map((d) => ({ ...d, _live: liveById[d.id], _last: liveData?.last_used?.[d.id] })),
+    [data, liveById, liveData])
   const filtered = useMemo(() => devices.filter((d) => {
     if (status === 'online' && !d.is_online) return false
     if (status === 'offline' && d.is_online) return false
@@ -136,8 +143,9 @@ function DevicesView({ refresh }) {
                 <tr>
                   <SortTh col="device" sort={sort} onSort={onSort}>Device</SortTh>
                   <SortTh col="status" sort={sort} onSort={onSort}>Status</SortTh>
-                  <SortTh col="address" sort={sort} onSort={onSort} className="hidden xl:table-cell">Address</SortTh>
+                  <SortTh col="using" sort={sort} onSort={onSort} className="hidden md:table-cell">Using now</SortTh>
                   <SortTh col="today" sort={sort} onSort={onSort} className="hidden lg:table-cell">Today</SortTh>
+                  <SortTh col="address" sort={sort} onSort={onSort} className="hidden xl:table-cell">Address</SortTh>
                   <th className="th text-right">Actions</th>
                 </tr>
               </thead>
@@ -162,9 +170,10 @@ function DevicesView({ refresh }) {
                       <StatusDot online={d.is_online} paused={d.paused} inUse={d.in_use} />
                       <p className="mt-1 text-xs text-slate-500">{d.paused && d.block_reasons?.length ? d.block_reasons[0] : `${d.is_online ? 'Seen' : 'Last seen'} ${timeAgo(d.last_seen)}`}</p>
                     </td>
-                    <td className="td hidden xl:table-cell">
-                      <p className="flex items-center font-mono text-xs">{d.ip || '—'}<CopyButton value={d.ip} label="IP address" /></p>
-                      <p className="flex items-center font-mono text-xs text-slate-400">{d.mac}{d.is_private_mac && <span title="Private / randomised address" className="ml-1 text-amber-500">•</span>}<CopyButton value={d.mac} label="MAC address" /></p>
+                    <td className="td hidden max-w-[16rem] md:table-cell">
+                      {d.paused ? <span className="text-slate-400">—</span>
+                        : d._live ? <UsingCell live={d._live} />
+                        : <LastUsedCell last={d._last} />}
                     </td>
                     <td className="td hidden lg:table-cell">
                       {d.today_seconds ? (
@@ -173,6 +182,10 @@ function DevicesView({ refresh }) {
                           <p className="max-w-[14rem] truncate text-xs text-slate-500">{d.top.map((t) => t.service).join(', ')}</p>
                         </>
                       ) : <span className="text-slate-400">—</span>}
+                    </td>
+                    <td className="td hidden xl:table-cell">
+                      <p className="flex items-center font-mono text-xs">{d.ip || '—'}<CopyButton value={d.ip} label="IP address" /></p>
+                      <p className="flex items-center font-mono text-xs text-slate-400">{d.mac}{d.is_private_mac && <span title="Private / randomised address" className="ml-1 text-amber-500">•</span>}<CopyButton value={d.mac} label="MAC address" /></p>
                     </td>
                     <td className="td text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-2">

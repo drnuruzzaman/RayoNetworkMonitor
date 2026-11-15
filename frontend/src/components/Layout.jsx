@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { serverDate, serverNowSec, tzOpt } from '../lib/servertime'
 import {
   Activity, AppWindow, Bell, CalendarClock, LayoutDashboard, LogOut, Menu as MenuIcon, Moon, Network, PanelLeftClose,
   PanelLeftOpen, Server, Settings, Sun, Wifi, X,
@@ -41,24 +42,25 @@ function useStored(key, initial) {
 }
 
 function useNow() {
-  const [now, setNow] = useState(() => new Date())
+  const [sec, setSec] = useState(() => serverNowSec())
   useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000)
+    const t = setInterval(() => setSec(serverNowSec()), 1000)
     return () => clearInterval(t)
   }, [])
-  return now
+  return sec
 }
 
-/** Live date and time (to the second). */
+/** Live date and time (to the second), on the HomeNet server's clock. */
 function Clock({ compact }) {
-  const now = useNow()
-  const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-  const date = now.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+  const sec = useNow()
+  const d = serverDate(sec)
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', ...tzOpt() })
+  const date = d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', ...tzOpt() })
   if (compact) {
     return (
       <div className="text-center leading-tight" title={`${date} ${time}`}>
-        <p className="text-[11px] font-semibold tabular-nums text-slate-700 dark:text-slate-200">{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-        <p className="text-[10px] tabular-nums text-slate-400">{String(now.getSeconds()).padStart(2, '0')}s</p>
+        <p className="text-[11px] font-semibold tabular-nums text-slate-700 dark:text-slate-200">{d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...tzOpt() })}</p>
+        <p className="text-[10px] tabular-nums text-slate-400">{String(Math.floor(sec) % 60).padStart(2, '0')}s</p>
       </div>
     )
   }
@@ -172,11 +174,11 @@ export default function Layout({ onLogout }) {
 }
 
 function MobileClock() {
-  const now = useNow()
+  const d = serverDate(useNow())
   return (
     <span className="text-right text-xs leading-tight tabular-nums text-slate-500">
-      <span className="block font-semibold text-slate-700 dark:text-slate-200">{now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-      {now.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })}
+      <span className="block font-semibold text-slate-700 dark:text-slate-200">{d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', ...tzOpt() })}</span>
+      {d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short', ...tzOpt() })}
     </span>
   )
 }

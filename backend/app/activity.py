@@ -250,6 +250,30 @@ def current_activity(now: float | None = None) -> dict[int, dict]:
     return result
 
 
+def last_used(now: float | None = None, hours: int = 24) -> dict[int, dict]:
+    """device_id → the last screen-time app used while someone was actually using the device (last `hours`).
+    Only sessions overlapping an in-use period count, so pings from a locked phone never show up here."""
+    if not S.get("activity_detection"):
+        return {}
+    now = now or time.time()
+    lo = now - hours * 3600
+    ivs_all = active_intervals(lo, now)
+    if not ivs_all:
+        return {}
+    bg = _background_service_ids()
+    out: dict[int, dict] = {}
+    for r in db.q("SELECT u.device_id, u.service_id, u.start, u.end, s.name, s.category FROM usage_sessions u "
+                  "JOIN services s ON s.id=u.service_id WHERE u.end>=? ORDER BY u.end DESC", (lo,)):
+        did = r["device_id"]
+        if did in out or r["service_id"] in bg:
+            continue
+        hit = [(s, e) for s, e in ivs_all.get(did, []) if r["start"] <= e and r["end"] >= s]
+        if hit:
+            at = min(r["end"], max(e for _, e in hit))  # last moment it was both open and the device in use
+            out[did] = {"service_id": r["service_id"], "service": r["name"], "category": r["category"], "at": at}
+    return out
+
+
 def in_use_now(now: float | None = None) -> dict[int, bool]:
     """device_id → True if it reached enough foreground hosts in the last window."""
     if not S.get("activity_detection"):

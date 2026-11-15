@@ -211,7 +211,7 @@ function DhcpView({ refresh }) {
             )}
           </Card>
           <Callout tone="warning" title="Phones still using the modem's IPv6 DNS?">
-            This page fixes IPv4. If the setup check still warns about IPv6 DNS, turn off IPv6 on the modem's LAN settings if you can.
+            This page fixes IPv4. If the <Link to="/system" className="link">setup check</Link> still warns about IPv6 DNS, it lists which devices look affected; turn off IPv6 on the modem's LAN settings if you can.
           </Callout>
         </div>
       </div>

@@ -8,8 +8,9 @@ import EditDeviceModal from '../components/EditDeviceModal'
 import PauseButton from '../components/PauseButton'
 import BlockReasons from '../components/BlockReasons'
 import ScreenTime from '../components/ScreenTime'
+import AppUsageModal from '../components/AppUsage'
 import LimitsCard from '../components/Limits'
-import { UsingNow } from '../components/LiveNow'
+import { LastUsedLine, UsingNow } from '../components/LiveNow'
 import { RefreshControl, RefreshScope, useAutoRefresh } from '../components/RefreshControl'
 import { AssignDomainModal, OWN_APP, ServicePicker } from '../components/Pickers'
 import {
@@ -76,6 +77,7 @@ function OverviewTab({ device }) {
 function ActivityTab({ device }) {
   const [range, setRange] = useState('today')
   const [assign, setAssign] = useState(null)
+  const [openApp, setOpenApp] = useState(null)
   const sessions = useApi(`/usage/sessions?range=${range}&device_id=${device.id}`)
   const [showBackground, setShowBackground] = useState(false)
   const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60&in_use=${!showBackground}`)
@@ -89,7 +91,9 @@ function ActivityTab({ device }) {
               {sessions.data.sessions.map((x) => (
                 <li key={x.id} className="flex items-center gap-3 px-5 py-2.5 text-sm">
                   <span className="h-2.5 w-2.5 rounded-full" style={{ background: categoryColor(x.category) }} />
-                  <span className="flex-1 font-medium">{x.service}</span>
+                  {x.service_id
+                    ? <button type="button" className="flex-1 truncate text-left font-medium hover:underline" title={`See when ${x.service} was used`} onClick={() => setOpenApp(x)}>{x.service}</button>
+                    : <span className="flex-1 font-medium">{x.service}</span>}
                   <span className="text-xs text-slate-500">{range === 'today' || range === 'yesterday' ? '' : new Date(x.start * 1000).toLocaleDateString([], { weekday: 'short' }) + ' '}{clock(x.start)}–{clock(x.end)}</span>
                   <span className="w-16 text-right tabular-nums text-slate-600 dark:text-slate-300">{duration(x.seconds)}</span>
                 </li>
@@ -112,7 +116,7 @@ function ActivityTab({ device }) {
                       <p className="max-w-[16rem] truncate font-mono text-xs" title={x.domain}>{x.domain}</p>
                       <BlockReasons items={x.blocked_by} />
                     </td>
-                    <td className="px-2 py-2 align-top">{x.service ? <Badge color="blue">{x.service}</Badge> : <button className="link text-xs" onClick={() => setAssign(x.domain)}>Assign…</button>}</td>
+                    <td className="px-2 py-2 align-top">{x.service ? <button type="button" title={`See when ${x.service} was used`} onClick={() => setOpenApp({ service_id: x.service_id, service: x.service, category: x.category })}><Badge color="blue">{x.service}</Badge></button> : <button className="link text-xs" onClick={() => setAssign(x.domain)}>Assign…</button>}</td>
                     <td className="whitespace-nowrap px-2 py-2 text-right align-top tabular-nums text-slate-500" title={x.blocked ? `${x.blocked} of ${x.queries} lookups blocked` : `${x.queries} lookups`}>
                       {number(x.queries)}{x.blocked ? <span className="ml-1 text-xs text-red-500">({x.blocked} blocked)</span> : ''}
                     </td>
@@ -124,6 +128,7 @@ function ActivityTab({ device }) {
         </Card>
       </div>
       {assign && <AssignDomainModal domain={assign} onClose={() => setAssign(null)} onDone={() => { domains.reload(); sessions.reload() }} />}
+      {openApp && <AppUsageModal app={openApp} deviceId={device.id} initialPeriod={range === 'yesterday' || range === 'today' ? 'day' : 'week'} onClose={() => setOpenApp(null)} />}
     </div>
   )
 }
@@ -293,7 +298,9 @@ function DeviceView({ id, refresh }) {
             {device.block_reasons.map((r) => <Badge key={r} color="red">{r}</Badge>)}
             {device.is_private_mac && <Badge color="amber" title="This device uses a private/random MAC address">Private address</Badge>}
           </div>
-          {device.live && !device.paused && <UsingNow live={device.live} className="mt-2" />}
+          {!device.paused && (device.live
+            ? <UsingNow live={device.live} className="mt-2" />
+            : device.last_used && <LastUsedLine last={device.last_used} className="mt-2" />)}
         </div>
         <div className="flex flex-wrap gap-2">
           <PauseButton device={device} onChange={reload} size="md" />

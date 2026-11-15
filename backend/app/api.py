@@ -2,6 +2,7 @@ import asyncio  # noqa: F401 (used by async endpoints)
 import json
 import os
 import time
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
@@ -34,6 +35,19 @@ class PasswordBody(BaseModel):
 def setup_status(request: Request):
     return {"password_set": bool(S.get("admin_password_hash")), "setup_complete": bool(S.get("setup_complete")),
             "is_local": is_local(request), "version": VERSION}
+
+
+def _server_clock() -> dict:
+    """The HomeNet server's clock (the PC on the network) so every viewer sees the same time, not their own."""
+    local = datetime.now().astimezone()
+    off = local.utcoffset()
+    return {"now": time.time(), "tz_offset": int(off.total_seconds() // 60) if off else 0, "tz": local.tzname(),
+            "display_tz": S.get("display_timezone") or None}
+
+
+@public.get("/time")
+def server_time():
+    return _server_clock()
 
 
 @public.post("/setup/password")
@@ -241,7 +255,7 @@ def system_status():
         "queries": db.val("SELECT COUNT(*) FROM dns_queries"),
         "bind": {"host": S.get("ui_bind_host"), "port": S.get("ui_port")},
         "adguard_enabled": S.get("adguard_enabled"),
-        "now": time.time(),
+        **_server_clock(),
     }
 
 
@@ -353,7 +367,8 @@ def live():
         else:
             unknown.append(s)
     in_use.sort(key=lambda x: x["in_use_since"])
-    return {"now": now, "in_use": in_use, "idle": idle, "untracked": unknown,
+    last = {did: v for did, v in activity.last_used(now).items() if did not in cur}
+    return {"now": now, "in_use": in_use, "idle": idle, "untracked": unknown, "last_used": last,
             "enabled": bool(S.get("activity_detection") and S.get("adguard_enabled"))}
 
 
@@ -403,8 +418,9 @@ def get_device(device_id: int):
     s = D.serialize(d)
     recent = db.q1("SELECT COUNT(*) AS total, IFNULL(SUM(blocked),0) AS blocked FROM dns_queries "
                    "WHERE device_id=? AND ts>?", (device_id, time.time() - 900))
+    live = activity.current_activity().get(device_id)
     s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"), in_use=_in_use(d, activity.in_use_now()),
-             live=activity.current_activity().get(device_id),
+             live=live, last_used=None if live else activity.last_used().get(device_id),
              background_hosts=db.q("SELECT domain, share FROM device_background WHERE device_id=? ORDER BY share DESC",
                                    (device_id,)) if S.get("activity_learn_background") else [])
     s.update(paused=st.get("paused", False), block_reasons=st.get("reasons", []),
@@ -514,11 +530,12 @@ def usage_summary(range: str = "today", device_id: int | None = None, include_sy
 
 
 @api.get("/usage/screentime")
-def usage_screentime(device_id: int | None = None, period: str = "week", date: str | None = None):
+def usage_screentime(device_id: int | None = None, period: str = "week", date: str | None = None,
+                     service_id: int | None = None):
     if period not in ("week", "day"):
         raise HTTPException(400, "period must be week or day")
     try:
-        return usage.screentime(device_id, period, date)
+        return usage.screentime(device_id, period, date, service_id)
     except ValueError:
         raise HTTPException(400, "date must look like 2026-11-14")
 

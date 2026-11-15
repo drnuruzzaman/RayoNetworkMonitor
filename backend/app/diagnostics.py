@@ -82,9 +82,22 @@ def _host_checks(alias: str) -> list[dict]:
 
     v6 = [a for a in (info.get("ipv6_dns") or []) if a and not a.lower().startswith("fec0:0:0:ffff::") and a != "::1"]
     if v6:
-        out.append(_check("ipv6", "warn", "Your modem hands out its own IPv6 DNS server",
-                          f"This PC was given {', '.join(v6)} as an IPv6 DNS server. Phones and tablets often prefer IPv6, so they can skip AdGuard Home.",
-                          "In the modem's IPv6 / LAN settings, turn off IPv6 DNS (RDNSS / DHCPv6 DNS) or point it at this PC, or turn IPv6 off on the LAN."))
+        now = time.time()
+        # Phones/tablets/computers that are online but AdGuard hasn't seen in the last hour: the likely bypassers.
+        human = db.q("SELECT * FROM devices WHERE is_online=1 AND is_self=0 AND is_gateway=0 "
+                     "AND type IN ('phone','tablet','computer','laptop')")
+        candidates = [D.display_name(d) for d in human if not (d["last_dns"] and now - d["last_dns"] < 3600)]
+        detail = (f"This PC was given {', '.join(v6)} as an IPv6 DNS server. Phones and tablets often prefer IPv6, "
+                  "so they can skip AdGuard Home. HomeNet can't see a device that fully bypasses it, so it can only "
+                  "point to likely ones: devices online now that AdGuard hasn't seen in the last hour.")
+        if candidates:
+            shown = ", ".join(candidates[:6]) + (f" and {len(candidates) - 6} more" if len(candidates) > 6 else "")
+            detail += f" Right now that's: {shown}. (Could also be a VPN, Private DNS or iCloud Private Relay, not only IPv6.)"
+        else:
+            detail += " Right now every online phone, tablet and computer is reaching AdGuard, so none appears to be bypassing."
+        out.append(_check("ipv6", "warn", "Your modem hands out its own IPv6 DNS server", detail,
+                          "In the modem's IPv6 / LAN settings, turn off IPv6 DNS (RDNSS / DHCPv6 DNS) or point it at this PC, or turn IPv6 off on the LAN.",
+                          "/devices"))
     else:
         out.append(_check("ipv6", "ok", "No IPv6 DNS bypass detected", "This PC wasn't given an IPv6 DNS server by the modem."))
     return out

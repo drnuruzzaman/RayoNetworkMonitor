@@ -7,18 +7,20 @@ export function duration(sec) {
   return m ? `${h}h ${m}m` : `${h}h`
 }
 
+import { serverNowSec, serverDate, tzOpt } from './servertime'
+
 export function timeAgo(ts) {
   if (!ts) return 'never'
-  const s = Date.now() / 1000 - ts
+  const s = serverNowSec() - ts
   if (s < 45) return 'just now'
   if (s < 3600) return `${Math.round(s / 60)}m ago`
   if (s < 86400) return `${Math.round(s / 3600)}h ago`
   if (s < 86400 * 30) return `${Math.round(s / 86400)}d ago`
-  return new Date(ts * 1000).toLocaleDateString()
+  return serverDate(ts).toLocaleDateString([], tzOpt())
 }
 
-export const clock = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'
-export const dateTime = (ts) => ts ? new Date(ts * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '—'
+export const clock = (ts) => ts ? serverDate(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...tzOpt() }) : '—'
+export const dateTime = (ts) => ts ? serverDate(ts).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short', ...tzOpt() }) : '—'
 export const number = (n) => (n ?? 0).toLocaleString()
 
 export function bytes(n) {

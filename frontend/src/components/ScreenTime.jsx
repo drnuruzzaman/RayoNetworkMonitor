@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight } from 'lucide-react'
 import { Bar, BarChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { useApi } from '../api'
+import { serverToday } from '../lib/servertime'
+import AppUsageModal from './AppUsage'
 import { Card, Segmented, Spinner, cx } from './ui'
 import { categoryColor, duration } from '../lib/format'
 
@@ -32,7 +34,8 @@ function StackTip({ active, payload, label, period }) {
 /** Apple-style Screen Time: Week/Day, bars stacked by category, average and change, top categories, most used apps. */
 export default function ScreenTime({ deviceId }) {
   const [period, setPeriod] = useState('day')
-  const [date, setDate] = useState(iso(new Date()))
+  const [date, setDate] = useState(serverToday())
+  const [openApp, setOpenApp] = useState(null) // app whose usage popup is open
   const q = `/usage/screentime?period=${period}&date=${date}${deviceId ? `&device_id=${deviceId}` : ''}`
   const { data, loading } = useApi(q)
 
@@ -58,7 +61,7 @@ export default function ScreenTime({ deviceId }) {
 
   return (
     <Card title="Screen time" subtitle={deviceId ? 'Time someone was actually using this device' : 'All devices, only while someone was actually using them'}
-      actions={<Segmented value={period} onChange={(p) => { setPeriod(p); setDate(iso(new Date())) }} options={[{ value: 'week', label: 'Week' }, { value: 'day', label: 'Day' }]} />}>
+      actions={<Segmented value={period} onChange={(p) => { setPeriod(p); setDate(serverToday()) }} options={[{ value: 'week', label: 'Week' }, { value: 'day', label: 'Day' }]} />}>
       {!data ? <div className="flex items-center gap-2 py-10 text-sm text-slate-500"><Spinner />Loading…</div> : (
         <>
           <div className="flex flex-wrap items-end justify-between gap-4">
@@ -111,18 +114,21 @@ export default function ScreenTime({ deviceId }) {
           )}
 
           <div className="mt-5 border-t border-slate-100 pt-4 dark:border-slate-800">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Most used</p>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Most used <span className="font-normal normal-case tracking-normal text-slate-400">· click an app for details</span></p>
             {data.apps.length === 0 ? <p className="text-sm text-slate-500">No app use in this period.</p> : (
               <ul className="space-y-3">
                 {data.apps.slice(0, 10).map((a) => (
                   <li key={a.service}>
-                    <div className="mb-1 flex items-center justify-between text-sm">
-                      <span className="flex items-center gap-2 font-medium"><span className="h-2.5 w-2.5 rounded-full" style={{ background: categoryColor(a.category) }} />{a.service}</span>
-                      <span className="tabular-nums text-slate-500">{duration(a.seconds)}</span>
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-                      <div className="h-full rounded-full" style={{ width: `${Math.max(2, (a.seconds / maxApp) * 100)}%`, background: categoryColor(a.category) }} />
-                    </div>
+                    <button type="button" onClick={() => setOpenApp(a)} title={`See when ${a.service} was used${deviceId ? ' and set a time limit' : ''}`}
+                      className="-mx-2 block w-[calc(100%+1rem)] rounded-lg px-2 py-1 text-left hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                      <div className="mb-1 flex items-center justify-between text-sm">
+                        <span className="flex items-center gap-2 font-medium"><span className="h-2.5 w-2.5 rounded-full" style={{ background: categoryColor(a.category) }} />{a.service}</span>
+                        <span className="tabular-nums text-slate-500">{duration(a.seconds)}</span>
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                        <div className="h-full rounded-full" style={{ width: `${Math.max(2, (a.seconds / maxApp) * 100)}%`, background: categoryColor(a.category) }} />
+                      </div>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -130,6 +136,7 @@ export default function ScreenTime({ deviceId }) {
           </div>
         </>
       )}
+      {openApp && <AppUsageModal app={openApp} deviceId={deviceId} initialPeriod={period} initialDate={date} onClose={() => setOpenApp(null)} />}
     </Card>
   )
 }

@@ -538,7 +538,7 @@ def summary(range_key: str, device_id: int | None = None, include_system: bool =
     }
 
 
-def screentime(device_id: int | None, period: str = "week", date: str | None = None) -> dict:
+def screentime(device_id: int | None, period: str = "week", date: str | None = None, service_id: int | None = None) -> dict:
     """Apple-style Screen Time: per-day (week) or per-hour (day) totals split by category, plus most-used apps.
 
     Totals are the time someone was actually using the device. Each bucket's in-use time is split across
@@ -581,7 +581,8 @@ def screentime(device_id: int | None, period: str = "week", date: str | None = N
             sec = activity.overlap(a, b, act.get(s["device_id"], [])) if act is not None else b - a
             if sec > 0:
                 cats[s["category"]] = cats.get(s["category"], 0) + sec
-                apps[(s["service"], s["category"])] = apps.get((s["service"], s["category"]), 0) + sec
+                key = (s["service_id"], s["service"], s["category"])
+                apps[key] = apps.get(key, 0) + sec
         attributed = sum(cats.values())
         if active is None:
             active = attributed
@@ -597,7 +598,8 @@ def screentime(device_id: int | None, period: str = "week", date: str | None = N
             app_tot[a] = app_tot.get(a, 0) + v
         buckets.append({"label": labels[i], "start": blo, "date": edges[i].strftime("%Y-%m-%d"),
                         "seconds": round(active), "future": blo > now,
-                        "categories": {c: round(v) for c, v in cats.items() if v >= 1}})
+                        "categories": {c: round(v) for c, v in cats.items() if v >= 1},
+                        "apps": {str(a[0]): round(v) for a, v in apps.items() if v >= 1}})
 
     total = sum(b["seconds"] for b in buckets)
     # Previous period for the "% from last week" comparison.
@@ -612,10 +614,35 @@ def screentime(device_id: int | None, period: str = "week", date: str | None = N
         "previous_seconds": round(prev_total),
         "buckets": buckets,
         "categories": sorted(({"category": c, "seconds": round(v)} for c, v in cat_tot.items() if v >= 30), key=lambda x: -x["seconds"]),
-        "apps": sorted(({"service": a, "category": c, "seconds": round(v)} for (a, c), v in app_tot.items() if v >= 30),
+        "apps": sorted(({"service_id": sid, "service": a, "category": c, "seconds": round(v)} for (sid, a, c), v in app_tot.items() if v >= 30),
                        key=lambda x: -x["seconds"])[:25],
         "is_current": lo <= now < hi,
+        "app": _app_periods(sess, service_id, lo, min(hi, now), pad, act) if service_id else None,
     }
+
+
+def _app_periods(sess: list[dict], service_id: int, lo: float, hi: float, pad: float, act: dict | None) -> dict:
+    """When one app was used in [lo, hi]: its sessions cut to the times the device was really in use,
+    joined when less than 2 minutes apart. [{start, end, seconds}], newest first."""
+    pieces = []
+    for s in sess:
+        if s["service_id"] != service_id:
+            continue
+        a, b = max(s["start"], lo), min(s["end"] + pad, hi)
+        if b <= a:
+            continue
+        if act is None:
+            pieces.append((a, b))
+        else:
+            pieces += [(max(a, x), min(b, y)) for x, y in act.get(s["device_id"], []) if min(b, y) > max(a, x)]
+    merged: list[list[float]] = []
+    for a, b in sorted(pieces):
+        if merged and a - merged[-1][1] <= 120:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return {"service_id": service_id,
+            "periods": [{"start": a, "end": b, "seconds": round(b - a)} for a, b in reversed(merged) if b - a >= 1]}
 
 
 def recent_sessions(range_key: str, device_id: int | None = None, limit: int = 200) -> list[dict]:
@@ -637,8 +664,8 @@ def recent_sessions(range_key: str, device_id: int | None = None, limit: int = 2
         if sec <= 0:
             continue  # only background traffic while nobody was using the device
         out.append({"id": r["id"], "device_id": r["device_id"], "device": names.get(r["device_id"], "Unknown"),
-                    "service": r["service"], "category": r["category"], "start": r["start"], "end": r["end"],
-                    "seconds": round(sec), "queries": r["queries"]})
+                    "service_id": r["service_id"], "service": r["service"], "category": r["category"],
+                    "start": r["start"], "end": r["end"], "seconds": round(sec), "queries": r["queries"]})
         if len(out) >= limit:
             break
     return out
@@ -677,7 +704,7 @@ def top_domains(range_key: str, device_id: int | None = None, unmapped_only: boo
                          "(s.track_time=1 AND IFNULL(s.hidden,0)=0 AND s.category != 'System'))")
         params += f[1]
     sql = ("SELECT q.domain, COUNT(*) AS queries, SUM(q.blocked) AS blocked, MAX(q.ts) AS last, "
-           "q.service_id, s.name AS service FROM dns_queries q LEFT JOIN services s ON s.id=q.service_id"
+           "q.service_id, s.name AS service, s.category FROM dns_queries q LEFT JOIN services s ON s.id=q.service_id"
            + where + " GROUP BY q.domain ORDER BY queries DESC LIMIT ?")
     rows = db.q(sql, params + [limit * 3 if in_use_only else limit])
     if in_use_only:

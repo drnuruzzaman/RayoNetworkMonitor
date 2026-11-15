@@ -5,11 +5,12 @@ import { useApi } from '../api'
 import DeviceIcon from './DeviceIcon'
 import { Badge, Card, EmptyState, cx } from './ui'
 import { categoryColor, clock } from '../lib/format'
+import { dayDiff, serverDate, serverNowSec, tzOpt } from '../lib/servertime'
 
 function useTick(ms = 1000) {
-  const [now, setNow] = useState(() => Date.now() / 1000)
+  const [now, setNow] = useState(() => serverNowSec())
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now() / 1000), ms)
+    const t = setInterval(() => setNow(serverNowSec()), ms)
     return () => clearInterval(t)
   }, [ms])
   return now
@@ -44,6 +45,72 @@ export function UsingNow({ live, className }) {
       )}
     </p>
   )
+}
+
+const appLabel = (a) => (a.service === 'Website' && a.domain ? a.domain : a.service)
+
+/** Devices table cell: "Using NAB since 12:57 · 39s", other apps underneath (ticks every second). */
+export function UsingCell({ live }) {
+  const now = useTick()
+  const app = live?.apps?.[0]
+  if (!live) return <span className="text-slate-400">—</span>
+  return (
+    <div className="min-w-0">
+      <p className="truncate text-sm">
+        {app ? <>Using <b style={{ color: categoryColor(app.category) }}>{appLabel(app)}</b></> : 'In use'}
+        <span className="text-slate-500"> since {clock(app ? app.since : live.in_use_since)}</span>
+      </p>
+      <p className="truncate text-xs text-slate-500">
+        <span className="tabular-nums">{running(now - (app ? app.since : live.in_use_since))}</span>
+        {live.apps?.length > 1 && <> · also {live.apps.slice(1).map((a, i) => (
+          <span key={a.service_id}>{i > 0 && ', '}<b style={{ color: categoryColor(a.category) }}>{appLabel(a)}</b></span>
+        ))}</>}
+      </p>
+    </div>
+  )
+}
+
+/** Device header line when idle: "Last used Microsoft Teams at 17:11 · 32m ago" (ticks every minute). */
+export function LastUsedLine({ last, className }) {
+  const now = useTick(30000)
+  if (!last) return null
+  return (
+    <p className={cx('flex flex-wrap items-center gap-x-1.5 text-sm text-slate-500', className)}>
+      <span className="h-2 w-2 rounded-full bg-slate-300 dark:bg-slate-600" />
+      Last used <b style={{ color: categoryColor(last.category) }}>{appLabel(last)}</b> {dayAt(last.at)}
+      <span className="tabular-nums text-slate-400">· {ago(now - last.at)}</span>
+    </p>
+  )
+}
+
+/** Devices table cell for a device not in use: "Last used Facebook at 12:39 · 15m ago". */
+export function LastUsedCell({ last }) {
+  const now = useTick(30000)
+  if (!last) return <span className="text-slate-400">—</span>
+  return (
+    <div className="min-w-0 opacity-80">
+      <p className="truncate text-sm text-slate-500">
+        Last used <b style={{ color: categoryColor(last.category) }}>{last.service}</b> {dayAt(last.at)}
+      </p>
+      <p className="truncate text-xs tabular-nums text-slate-400">{ago(now - last.at)}</p>
+    </div>
+  )
+}
+
+/** "at 12:39" today, else "yesterday at 17:59" / "Fri at 17:59" so the time is never read as today. */
+function dayAt(ts) {
+  const days = dayDiff(ts)
+  const prefix = days <= 0 ? '' : days === 1 ? 'yesterday ' : `${serverDate(ts).toLocaleDateString([], { weekday: 'short', ...tzOpt() })} `
+  return `${prefix}at ${clock(ts)}`
+}
+
+/** "15m ago", "2h 5m ago". */
+function ago(sec) {
+  sec = Math.max(0, Math.round(sec))
+  if (sec < 60) return 'just now'
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  return h ? `${h}h ${m}m ago` : `${m}m ago`
 }
 
 /** Overview panel: who is using what right now, since when. */

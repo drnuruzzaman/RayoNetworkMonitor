@@ -4,6 +4,7 @@ import { Activity as ActivityIcon, Globe } from 'lucide-react'
 import { useApi } from '../api'
 import { CategoryDonut, UsageTimeline } from '../components/Charts'
 import { AssignDomainModal } from '../components/Pickers'
+import AppUsageModal from '../components/AppUsage'
 import { BarList, Callout, Card, EmptyState, ErrorState, Loading, PageHeader, Segmented, Select, Toggle } from '../components/ui'
 import { RANGE_OPTIONS, categoryColor, clock, duration, number } from '../lib/format'
 
@@ -13,6 +14,7 @@ export default function Activity() {
   const [device, setDevice] = useState('')
   const [system, setSystem] = useState(false)
   const [assign, setAssign] = useState(null)
+  const [openApp, setOpenApp] = useState(null) // { service_id, service, category, deviceId }
   const qs = `range=${range}${device ? `&device_id=${device}` : ''}`
   const { data, error, loading, reload } = useApi(`/usage/summary?${qs}&include_system=${system}`, { refresh: 60000 })
   const sessions = useApi(`/usage/sessions?${qs}`)
@@ -48,7 +50,8 @@ export default function Activity() {
         <Card title="Apps">
           {data.services.length ? (
             <BarList items={data.services.slice(0, 15).map((s) => ({ key: s.service_id, label: s.service, sub: `${s.sessions} session${s.sessions === 1 ? '' : 's'}`, value: s.seconds, category: s.category }))}
-              format={duration} colorFor={(i) => categoryColor(i.category)} />
+              format={duration} colorFor={(i) => categoryColor(i.category)}
+              onClick={(i) => i.key && setOpenApp({ service_id: i.key, service: i.label, category: i.category, deviceId: device ? Number(device) : null })} />
           ) : <p className="text-sm text-slate-500">No app activity in this period.</p>}
         </Card>
         <Card title="Devices">
@@ -67,7 +70,9 @@ export default function Activity() {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {sessions.data.sessions.map((s) => (
                   <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                    <td className="td"><span className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: categoryColor(s.category) }} />{s.service}</td>
+                    <td className="td"><span className="mr-2 inline-block h-2 w-2 rounded-full" style={{ background: categoryColor(s.category) }} />{s.service_id
+                      ? <button type="button" className="text-left font-medium hover:underline" title={`See when ${s.service} was used`} onClick={() => setOpenApp({ service_id: s.service_id, service: s.service, category: s.category, deviceId: s.device_id })}>{s.service}</button>
+                      : s.service}</td>
                     <td className="td text-slate-600 dark:text-slate-300">{s.device}</td>
                     <td className="td text-slate-500">{isDaily && new Date(s.start * 1000).toLocaleDateString([], { weekday: 'short', day: 'numeric' }) + ' '}{clock(s.start)}–{clock(s.end)}</td>
                     <td className="td text-right tabular-nums">{duration(s.seconds)}</td>
@@ -95,6 +100,7 @@ export default function Activity() {
         Times are estimates. HomeNet sees which services a device looks up (e.g. youtube.com), not what's on screen. Apps that refresh in the background can add a little extra time.
       </Callout>
       {assign && <AssignDomainModal domain={assign} onClose={() => setAssign(null)} onDone={() => { unmapped.reload(); reload() }} />}
+      {openApp && <AppUsageModal app={openApp} deviceId={openApp.deviceId} initialPeriod={isDaily ? 'week' : 'day'} onClose={() => setOpenApp(null)} />}
     </>
   )
 }

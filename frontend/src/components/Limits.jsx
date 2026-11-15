@@ -8,7 +8,10 @@ import { DAYS, categoryColor, duration } from '../lib/format'
 const PRESETS = [15, 30, 45, 60, 90, 120, 180]
 const fmtLimit = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`)
 
-function LimitModal({ limit, device, onClose, onSaved }) {
+export const fmtLimitMinutes = fmtLimit
+
+/** Add/edit a daily time limit. Pass limit={target_type:'app', target, target_name} to start with an app chosen. */
+export function LimitModal({ limit, device, onClose, onSaved }) {
   const toast = useToast()
   const { data } = useApi('/services')
   const [form, setForm] = useState({

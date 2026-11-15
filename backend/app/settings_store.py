@@ -27,6 +27,19 @@ SCHEMA: list[dict] = [
          label="Dashboard port", restart=True, help="The port the dashboard runs on. Restart the app after changing it."),
     dict(key="session_hours", group="general", type="int", default=24, min=1, max=720,
          label="Stay signed in for (hours)", help="How long a login lasts before you have to sign in again."),
+    dict(key="display_timezone", group="general", type="select", default="",
+         options=[{"value": "", "label": "Automatic (this PC's timezone)"},
+                  {"value": "Australia/Sydney", "label": "Sydney / Melbourne / Canberra (daylight saving)"},
+                  {"value": "Australia/Brisbane", "label": "Brisbane (no daylight saving)"},
+                  {"value": "Australia/Adelaide", "label": "Adelaide (daylight saving)"},
+                  {"value": "Australia/Perth", "label": "Perth"},
+                  {"value": "Australia/Darwin", "label": "Darwin"},
+                  {"value": "Australia/Hobart", "label": "Hobart (daylight saving)"},
+                  {"value": "Pacific/Auckland", "label": "Auckland (daylight saving)"},
+                  {"value": "UTC", "label": "UTC"}],
+         label="Dashboard timezone",
+         help="Which timezone the clock and all times use. 'Automatic' follows this PC's clock. Pick your local "
+              "zone if the PC is set to a different one than your modem (e.g. without daylight saving)."),
 
     # ---- Network scanning
     dict(key="scan_enabled", group="network", type="bool", default=True,
