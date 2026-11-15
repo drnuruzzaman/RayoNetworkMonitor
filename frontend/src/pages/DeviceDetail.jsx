@@ -17,6 +17,7 @@ import {
   Badge, BarList, Button, Callout, Card, ConfirmModal, CopyButton, EmptyState, ErrorState, Loading, Segmented, StatusDot, Tabs, Toggle, useToast,
 } from '../components/ui'
 import { DAYS, RANGE_OPTIONS, categoryColor, clock, dateTime, duration, number, timeAgo } from '../lib/format'
+import { dayDiff } from '../lib/servertime'
 import { RuleModal } from './Schedules'
 
 function Info({ label, children, mono }) {
@@ -80,7 +81,7 @@ function ActivityTab({ device }) {
   const [openApp, setOpenApp] = useState(null)
   const sessions = useApi(`/usage/sessions?range=${range}&device_id=${device.id}`)
   const [showBackground, setShowBackground] = useState(false)
-  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60&in_use=${!showBackground}`)
+  const domains = useApi(`/usage/domains?range=${range}&device_id=${device.id}&limit=60&in_use=${!showBackground}&sort=recent`)
   return (
     <div className="space-y-6">
       <Segmented value={range} onChange={setRange} options={RANGE_OPTIONS} />
@@ -110,10 +111,11 @@ function ActivityTab({ device }) {
           ) : (
             <table className="min-w-full text-sm">
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {domains.data.domains.map((x) => (
+                {domains.data.domains.slice().sort((a, b) => (b.last || 0) - (a.last || 0)).map((x) => (
                   <tr key={x.domain}>
                     <td className="px-5 py-2 align-top">
                       <p className="max-w-[16rem] truncate font-mono text-xs" title={x.domain}>{x.domain}</p>
+                      {x.last && <p className="mt-0.5 text-[11px] text-slate-500" title={dateTime(x.last)}>Last {dayDiff(x.last) === 0 ? clock(x.last) : dateTime(x.last)} · {timeAgo(x.last)}</p>}
                       <BlockReasons items={x.blocked_by} />
                     </td>
                     <td className="px-2 py-2 align-top">{x.service ? <button type="button" title={`See when ${x.service} was used`} onClick={() => setOpenApp({ service_id: x.service_id, service: x.service, category: x.category })}><Badge color="blue">{x.service}</Badge></button> : <button className="link text-xs" onClick={() => setAssign(x.domain)}>Assign…</button>}</td>
@@ -299,7 +301,7 @@ function DeviceView({ id, refresh }) {
             {device.is_private_mac && <Badge color="amber" title="This device uses a private/random MAC address">Private address</Badge>}
           </div>
           {!device.paused && (device.live
-            ? <UsingNow live={device.live} className="mt-2" />
+            ? <UsingNow live={device.live} last={device.last_used} className="mt-2" />
             : device.last_used && <LastUsedLine last={device.last_used} className="mt-2" />)}
         </div>
         <div className="flex flex-wrap gap-2">

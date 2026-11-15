@@ -367,7 +367,8 @@ def live():
         else:
             unknown.append(s)
     in_use.sort(key=lambda x: x["in_use_since"])
-    last = {did: v for did, v in activity.last_used(now).items() if did not in cur}
+    # Idle devices, and in-use ones where no known app showed up in the window: their last app.
+    last = {did: v for did, v in activity.last_used(now).items() if not cur.get(did, {}).get("apps")}
     return {"now": now, "in_use": in_use, "idle": idle, "untracked": unknown, "last_used": last,
             "enabled": bool(S.get("activity_detection") and S.get("adguard_enabled"))}
 
@@ -420,7 +421,7 @@ def get_device(device_id: int):
                    "WHERE device_id=? AND ts>?", (device_id, time.time() - 900))
     live = activity.current_activity().get(device_id)
     s.update(recent_lookups=recent, adguard_enabled=S.get("adguard_enabled"), in_use=_in_use(d, activity.in_use_now()),
-             live=live, last_used=None if live else activity.last_used().get(device_id),
+             live=live, last_used=None if live and live.get("apps") else activity.last_used().get(device_id),
              background_hosts=db.q("SELECT domain, share FROM device_background WHERE device_id=? ORDER BY share DESC",
                                    (device_id,)) if S.get("activity_learn_background") else [])
     s.update(paused=st.get("paused", False), block_reasons=st.get("reasons", []),
@@ -547,8 +548,9 @@ def usage_sessions(range: str = "today", device_id: int | None = None):
 
 @api.get("/usage/domains")
 def usage_domains(range: str = "today", device_id: int | None = None, unmapped: bool = False, limit: int = 100,
-                  in_use: bool = False):
-    return {"domains": usage.top_domains(_range(range), device_id, unmapped, min(limit, 1000), in_use_only=in_use)}
+                  in_use: bool = False, sort: str = "lookups"):
+    return {"domains": usage.top_domains(_range(range), device_id, unmapped, min(limit, 1000), in_use_only=in_use,
+                                         recent_first=(sort == "recent"))}
 
 
 # ====================================================================== services catalog

@@ -28,7 +28,7 @@ export function running(sec) {
 }
 
 /** One line: "Using YouTube since 14:02 · 23m 10s" (ticks every second). */
-export function UsingNow({ live, className }) {
+export function UsingNow({ live, last, className }) {
   const now = useTick()
   const app = live?.apps?.[0]
   if (!live) return null
@@ -37,7 +37,11 @@ export function UsingNow({ live, className }) {
       <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" /><span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" /></span>
       {app ? <>Using <b style={{ color: categoryColor(app.category) }}>{app.service === 'Website' && app.domain ? app.domain : app.service}</b> since {clock(app.since)}
         <span className="tabular-nums text-slate-500">· {running(now - app.since)}</span></>
-        : <>In use since {clock(live.in_use_since)} <span className="tabular-nums text-slate-500">· {running(now - live.in_use_since)}</span></>}
+        : last
+          // In use, but nothing recognised in the last few minutes: show the last app instead of a bare "In use".
+          ? <>Last used <b style={{ color: categoryColor(last.category) }}>{appLabel(last)}</b> {dayAt(last.at)}
+            <span className="tabular-nums text-slate-500">· in use since {clock(live.in_use_since)} · {running(now - live.in_use_since)}</span></>
+          : <>In use since {clock(live.in_use_since)} <span className="tabular-nums text-slate-500">· {running(now - live.in_use_since)}</span></>}
       {live.apps?.length > 1 && (
         <span className="text-slate-500">· also {live.apps.slice(1).map((a, i) => (
           <span key={a.service_id}>{i > 0 && ', '}<b style={{ color: categoryColor(a.category) }}>{a.service === 'Website' && a.domain ? a.domain : a.service}</b></span>
@@ -50,15 +54,16 @@ export function UsingNow({ live, className }) {
 const appLabel = (a) => (a.service === 'Website' && a.domain ? a.domain : a.service)
 
 /** Devices table cell: "Using NAB since 12:57 · 39s", other apps underneath (ticks every second). */
-export function UsingCell({ live }) {
+export function UsingCell({ live, last }) {
   const now = useTick()
   const app = live?.apps?.[0]
   if (!live) return <span className="text-slate-400">—</span>
   return (
     <div className="min-w-0">
       <p className="truncate text-sm">
-        {app ? <>Using <b style={{ color: categoryColor(app.category) }}>{appLabel(app)}</b></> : 'In use'}
-        <span className="text-slate-500"> since {clock(app ? app.since : live.in_use_since)}</span>
+        {app ? <>Using <b style={{ color: categoryColor(app.category) }}>{appLabel(app)}</b><span className="text-slate-500"> since {clock(app.since)}</span></>
+          : last ? <>Last used <b style={{ color: categoryColor(last.category) }}>{appLabel(last)}</b><span className="text-slate-500"> {dayAt(last.at)}</span></>
+          : <>In use<span className="text-slate-500"> since {clock(live.in_use_since)}</span></>}
       </p>
       <p className="truncate text-xs text-slate-500">
         <span className="tabular-nums">{running(now - (app ? app.since : live.in_use_since))}</span>

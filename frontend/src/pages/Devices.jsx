@@ -172,7 +172,7 @@ function DevicesView({ refresh }) {
                     </td>
                     <td className="td hidden max-w-[16rem] md:table-cell">
                       {d.paused ? <span className="text-slate-400">—</span>
-                        : d._live ? <UsingCell live={d._live} />
+                        : d._live ? <UsingCell live={d._live} last={d._last} />
                         : <LastUsedCell last={d._last} />}
                     </td>
                     <td className="td hidden lg:table-cell">

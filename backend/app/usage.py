@@ -685,7 +685,7 @@ def _in_use_filter(lo: float, hi: float, device_id: int | None) -> tuple[str, li
 
 
 def top_domains(range_key: str, device_id: int | None = None, unmapped_only: bool = False, limit: int = 100,
-                in_use_only: bool = False) -> list[dict]:
+                in_use_only: bool = False, recent_first: bool = False) -> list[dict]:
     """Most looked-up addresses. With in_use_only, only what was looked up while someone was using the
     device, leaving out background services, infrastructure and tracker blocks."""
     lo, hi, _ = range_bounds(range_key)
@@ -705,7 +705,7 @@ def top_domains(range_key: str, device_id: int | None = None, unmapped_only: boo
         params += f[1]
     sql = ("SELECT q.domain, COUNT(*) AS queries, SUM(q.blocked) AS blocked, MAX(q.ts) AS last, "
            "q.service_id, s.name AS service, s.category FROM dns_queries q LEFT JOIN services s ON s.id=q.service_id"
-           + where + " GROUP BY q.domain ORDER BY queries DESC LIMIT ?")
+           + where + " GROUP BY q.domain ORDER BY " + ("last DESC" if recent_first else "queries DESC") + " LIMIT ?")
     rows = db.q(sql, params + [limit * 3 if in_use_only else limit])
     if in_use_only:
         rows = [r for r in rows if not activity._is_infra(r["domain"])][:limit]
