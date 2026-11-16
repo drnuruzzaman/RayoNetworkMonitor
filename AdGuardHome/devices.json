@@ -1,0 +1,5 @@
+{
+  "192.168.1.101": {"name": "Child device 1", "owner": "Child 1"},
+  "192.168.1.102": {"name": "Child device 2", "owner": "Child 2"},
+  "192.168.1.103": {"name": "Child device 3", "owner": "Child 3"}
+}
